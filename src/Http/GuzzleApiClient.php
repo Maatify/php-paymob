@@ -68,7 +68,7 @@ final readonly class GuzzleApiClient implements ApiClientInterface
             throw new ApiException("Invalid JSON response", $status, ['raw' => $result]);
         }
 
-        if ($status !== 200) {
+        if ($status > 400) {
             $this->logger?->error("[{$this->channel}] API returned error", ['uri'=>$uri,'body'=>$body,'decoded'=>$decoded]);
             throw new ApiException("API Error", $status, $decoded);
         }
@@ -108,7 +108,7 @@ final readonly class GuzzleApiClient implements ApiClientInterface
             throw new ApiException("Invalid JSON response", $status, ['raw' => $result]);
         }
 
-        if ($status !== 200) {
+        if ($status > 400) {
             $this->logger?->error("[{$this->channel}] API returned error", ['uri'=>$uri,'query'=>$query,'decoded'=>$decoded]);
             throw new ApiException("API Error", $status, $decoded);
         }

@@ -75,7 +75,7 @@ final readonly class CurlApiClient implements ApiClientInterface
             throw new ApiException("Invalid JSON response", $status, ['raw' => $result]);
         }
 
-        if ($status !== 200) {
+        if ($status > 400) {
             $this->logger?->error("[{$this->channel}] API returned error", compact('url','body','decoded'));
             throw new ApiException("API Error", $status, $decoded);
         }
@@ -120,7 +120,7 @@ final readonly class CurlApiClient implements ApiClientInterface
             throw new ApiException("Invalid JSON response", $status, ['raw' => $result]);
         }
 
-        if ($status !== 200) {
+        if ($status > 400) {
             $this->logger?->error("[{$this->channel}] API returned error", compact('url','query','decoded'));
             throw new ApiException("API Error", $status, $decoded);
         }

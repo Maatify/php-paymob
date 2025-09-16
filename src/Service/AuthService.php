@@ -29,14 +29,16 @@ final readonly class AuthService
         private TokenRepositoryInterface $repo
     ) {}
 
-    public function getToken(): TokenResponseDTO
+    public function getToken(bool $forceRefresh = false): TokenResponseDTO
     {
         try {
             $uri = '/auth/tokens';
-            // 1. تحقق من وجود توكن مخزن وصالح
-            $existing = $this->repo->get();
-            if ($existing && $existing->expiresAt > time()) {
-                return $existing;
+            if (!$forceRefresh) {
+                // 1. تحقق من وجود توكن مخزن وصالح
+                $existing = $this->repo->get();
+                if ($existing && $existing->expiresAt > time()) {
+                    return $existing;
+                }
             }
 
             // 2. اطلب توكن جديد من Paymob

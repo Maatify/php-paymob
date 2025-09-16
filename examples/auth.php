@@ -45,6 +45,7 @@ $authService = new AuthService($client, $config, $repo);
 
 // ───── التنفيذ ─────
 try {
+    // أول call → API request فعلي
     /** @var TokenResponseDTO $tokenDto */
     $tokenDto = $authService->getToken();
 
@@ -53,6 +54,16 @@ try {
     echo "Profile ID: {$tokenDto->profileId}\n";
     echo "Issued At: " . date('Y-m-d H:i:s', $tokenDto->issuedAt) . "\n";
     echo "Expires At: " . date('Y-m-d H:i:s', $tokenDto->expiresAt) . "\n";
+
+
+    // تاني call في نفس runtime → يقرأ من الذاكرة
+    $token2 = $authService->getToken();
+    echo "2nd Token generated successfully" . PHP_EOL;
+    echo "Token: {$token2->token}\n";
+    echo "Profile ID: {$token2->profileId}\n";
+    echo "Issued At: " . date('Y-m-d H:i:s', $token2->issuedAt) . "\n";
+    echo "Expires At: " . date('Y-m-d H:i:s', $token2->expiresAt) . "\n";
+
 } catch (AuthException $e) {
     echo "❌ Auth error: " . $e->getMessage() . PHP_EOL;
 } catch (NetworkException $e) {
