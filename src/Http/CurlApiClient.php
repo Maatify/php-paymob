@@ -97,11 +97,17 @@ final readonly class CurlApiClient implements ApiClientInterface
     {
         $url = rtrim($this->config->baseUrl, '/') . $uri . '?' . http_build_query($query);
 
+        $headers = $this->normalizeHeaders($headers);
+
+        $defaultHeaders = ['Content-Type: application/json'];
+        $headers = array_merge($defaultHeaders, $headers);
+
         $ch = curl_init($url);
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_CONNECTTIMEOUT => 30,
             CURLOPT_TIMEOUT        => 30,
+            CURLOPT_HTTPHEADER     => $headers,
         ]);
 
         $result = curl_exec($ch);

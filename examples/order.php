@@ -48,7 +48,7 @@ try {
     $request = new OrderRequestDTO(
         amountCents: 15000,
         currency: CurrencyEnum::EGP,
-        merchantOrderId: 'ORD-' . uniqid(),
+        merchantOrderId: uniqid(),
         items: $items
     );
 
