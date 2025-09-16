@@ -36,7 +36,7 @@ use Psr\Log\LogLevel;
 $dotenv = Dotenv\Dotenv::createImmutable(__DIR__ . '/../');
 $dotenv->safeLoad();
 
-final readonly class ExampleBootstrap
+final readonly class PaymobExampleBootstrap
 {
     public function __construct(
         public PaymobConfigDTO $config,
@@ -47,7 +47,7 @@ final readonly class ExampleBootstrap
     }
 }
 
-return (function (): ExampleBootstrap {
+return (function (): PaymobExampleBootstrap {
     // Logger setup
     $logger = new Logger('paymob.bootstrap');
     $logger->pushHandler(new StreamHandler(
@@ -60,9 +60,9 @@ return (function (): ExampleBootstrap {
 
     $config = new PaymobConfigDTO(
         apiKey             : $_ENV['PAYMOB_API_KEY'],
-        integrationIdCard  : $_ENV['PAYMOB_INTEGRATION_ID_CARD'],
-        integrationIdKiosk : $_ENV['PAYMOB_INTEGRATION_ID_KIOSK'],
-        integrationIdWallet: $_ENV['PAYMOB_INTEGRATION_ID_WALLET'],
+        integrationIdCard  : (int)$_ENV['PAYMOB_INTEGRATION_ID_CARD'],
+        integrationIdKiosk : (int)$_ENV['PAYMOB_INTEGRATION_ID_KIOSK'],
+        integrationIdWallet: (int)$_ENV['PAYMOB_INTEGRATION_ID_WALLET'],
         baseUrl            : $_ENV['PAYMOB_BASE_URL'],
     );
 
@@ -75,8 +75,8 @@ return (function (): ExampleBootstrap {
         config   : $config,
         logger   : $logger,
         channel  : 'examples',
-        useGuzzle: true
+        useGuzzle: false
     );
 
-    return new ExampleBootstrap($config, $client, $logger);
+    return new PaymobExampleBootstrap($config, $client, $logger);
 })();

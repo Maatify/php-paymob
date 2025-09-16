@@ -43,6 +43,9 @@ final readonly class CurlApiClient implements ApiClientInterface
 
         $headers = $this->normalizeHeaders($headers);
 
+        $defaultHeaders = ['Content-Type: application/json'];
+        $headers = array_merge($defaultHeaders, $headers);
+
         $ch = curl_init($url);
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,

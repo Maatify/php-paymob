@@ -32,6 +32,7 @@ final readonly class AuthService
     public function getToken(): TokenResponseDTO
     {
         try {
+            $uri = '/auth/tokens';
             // 1. تحقق من وجود توكن مخزن وصالح
             $existing = $this->repo->get();
             if ($existing && $existing->expiresAt > time()) {
@@ -40,7 +41,7 @@ final readonly class AuthService
 
             // 2. اطلب توكن جديد من Paymob
             $response = $this->http->post(
-                $this->config->baseUrl . '/auth/tokens',
+                $uri,
                 ['api_key' => $this->config->apiKey]
             );
 

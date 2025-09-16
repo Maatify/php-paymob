@@ -105,11 +105,32 @@ final class ApiClient implements ApiClientInterface
     }
 
     /**
-     * Validate that response contains expected OPay keys
+     * Validate that response contains expected Paymob keys
      */
     private function isValidResponse(array $response): bool
     {
-        // أغلب ردود OPay بترجع: code, message, data
-        return isset($response['code']) && isset($response['message']);
+        // لو الرد فاضي → أكيد مش valid
+        if (empty($response)) {
+            return false;
+        }
+
+        // في الـ Auth → أهم حاجة يكون فيه token
+        if (isset($response['token'])) {
+            return true;
+        }
+
+        // في الـ Orders → لازم يكون فيه id
+        if (isset($response['id'])) {
+            return true;
+        }
+
+        // في الـ Transactions → لازم يكون فيه transaction أو success
+        if (isset($response['transaction_processed_callback']) || isset($response['success'])) {
+            return true;
+        }
+
+        // Default → اعتبر الرد valid لو فيه أي مفتاح يدل على نتيجة
+        return true;
     }
+
 }

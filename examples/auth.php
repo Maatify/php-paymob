@@ -28,9 +28,8 @@ use Maatify\Paymob\Repository\InMemoryTokenRepository;
 use Maatify\Paymob\Service\AuthService;
 
 // ───── bootstrap ─────
-require __DIR__ . '/bootstrap.php';
 
-/** @var ExampleBootstrap $bootstrap */
+/** @var PaymobExampleBootstrap $bootstrap */
 $bootstrap = require __DIR__ . '/bootstrap.php';
 
 // جهّز الـ services

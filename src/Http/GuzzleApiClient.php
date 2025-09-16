@@ -45,7 +45,8 @@ final readonly class GuzzleApiClient implements ApiClientInterface
     public function post(string $uri, array $body, array $headers = []): array
     {
         $payload = json_encode($body, JSON_UNESCAPED_SLASHES);
-
+        $defaultHeaders = ['Content-Type: application/json'];
+        $headers = array_merge($defaultHeaders, $headers);
         try {
             $response = $this->client->post($uri, [
                 'body'    => $payload,
