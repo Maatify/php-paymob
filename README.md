@@ -19,7 +19,9 @@ Provides a clean, PSR-compliant wrapper around Paymob’s REST APIs with **DTOs,
 * ✅ `PaymobExceptionFactory` for mapping Paymob error codes → typed exceptions.
 * ✅ Logging support (PSR-3 / Monolog).
 * ✅ Orders API (`createOrder`) with `OrderRequestDTO`, `OrderResponseDTO`, `OrderItemDTO`, `OrderItemsDTO`.
-* 🚧 Upcoming: Transactions API, Kiosk Payments, Wallet Payments.
+* ✅ Payment Keys API (/acceptance/payment_keys) with `PaymentKeyRequestDTO`, `PaymentKeyResponseDTO`, `BillingDataDTO`.
+* ✅ Kiosk Payments API (pay) with typed response KioskPaymentResponseDTO.
+🚧 Upcoming: Transactions API, Wallet Payments.
 
 ---
 
@@ -59,12 +61,23 @@ PAYMOB_KEYS_EXPIRY=180
 src/
  ├── DTO/
  │    ├── PaymobConfigDTO.php
- │    ├── Auth/TokenResponseDTO.php
- │    └── Order/
- │         ├── OrderItemDTO.php
- │         ├── OrderItemsDTO.php
- │         ├── OrderRequestDTO.php
- │         └── OrderResponseDTO.php
+ │    ├── Auth/
+ │    │    └── TokenResponseDTO.php
+ │    ├── Order/
+ │    │    ├── OrderItemDTO.php
+ │    │    ├── OrderItemsDTO.php
+ │    │    ├── OrderRequestDTO.php
+ │    │    └── OrderResponseDTO.php
+ │    ├── Payment/
+ │    │    ├── BillingDataDTO.php
+ │    │    ├── PaymentKeyRequestDTO.php
+ │    │    ├── PaymentKeyResponseDTO.php
+ │    │    ├── KioskPaymentRequestDTO.php
+ │    │    └── KioskPaymentResponseDTO.php
+ │    └── Transaction/
+ │         └── TransactionResponseDTO.php (🚧 draft)
+ ├── Enum/
+ │    └── CurrencyEnum.php
  ├── Exception/
  │    ├── PaymobException.php
  │    ├── ApiException.php
@@ -84,12 +97,16 @@ src/
  │    └── InMemoryTokenRepository.php
  └── Service/
       ├── AuthService.php
-      └── OrderService.php
+      ├── OrderService.php
+      ├── PaymentKeyService.php
+      └── KioskPaymentService.php
 examples/
  ├── bootstrap.php
  ├── auth.php
- └── order.php
+ ├── order.php
+ └── kiosk.php
 ```
+
 
 ---
 
@@ -99,6 +116,8 @@ See [examples](./examples):
 
 * [Auth Example](./examples/auth.php) → Get a Paymob token.
 * [Order Example](./examples/order.php) → Create a new order with items.
+* [Payment Key Example](./examples/payment_key.php) → Generate a payment key after creating an order.
+* [KIOSK Example](./examples/kiosk.php) → Initiate a payment via kiosks (e.g., Aman, Masary).
 
 ---
 
@@ -157,6 +176,120 @@ $request = new OrderRequestDTO(
 
 $response = $orderService->createOrder($request);
 ```
+---
+### 💳 Generate Payment Key
+```php
+$billing = new BillingDataDTO(
+    firstName: 'Mohamed',
+    lastName: 'Abdulalim',
+    email: 'mohamed@example.com',
+    phoneNumber: '201000000000',
+    country: 'EG',       //<---- Optional
+    city: 'Cairo',       //<---- Optional
+    street: 'Nile St.',  //<---- Optional
+    building: '12',      //<---- Optional
+    floor: '8',          //<---- Optional
+    apartment: '803',    //<---- Optional
+    postalCode: '12345', //<---- Optional
+    state: 'EG'          //<---- Optional
+);
+
+$paymentKeyRequest = new PaymentKeyRequestDTO(
+    orderId: $orderResponse->id,
+    integrationId: $bootstrap->config->integrationIdCard,
+    amountCents: $orderResponse->amountCents,
+    currency: $orderResponse->currency,
+    billingData: $billing
+);
+
+$paymentKeyResponse = $paymentKeyService->generate($paymentKeyRequest);
+
+echo "Token: {$paymentKeyResponse->token}\n";
+
+```
+
+---
+
+## 🏪 Kiosk Payments
+
+Use **KioskPaymentService** to initiate a payment via kiosks (e.g., Aman, Masary).
+This requires using the **Kiosk integration ID** when generating the payment key.
+
+### Example
+
+```php
+use Maatify\Paymob\DTO\Order\OrderItemDTO;
+use Maatify\Paymob\DTO\Order\OrderItemsDTO;
+use Maatify\Paymob\DTO\Order\OrderRequestDTO;
+use Maatify\Paymob\DTO\Payment\BillingDataDTO;
+use Maatify\Paymob\DTO\Payment\PaymentKeyRequestDTO;
+use Maatify\Paymob\DTO\Payment\KioskPaymentRequestDTO;
+use Maatify\Paymob\Service\OrderService;
+use Maatify\Paymob\Service\PaymentKeyService;
+use Maatify\Paymob\Service\KioskPaymentService;
+use Maatify\Paymob\Enum\CurrencyEnum;
+
+// Step 1: Create order
+$items = new OrderItemsDTO(
+    new OrderItemDTO('T-shirt', 5000, 1),
+    new OrderItemDTO('Shoes', 10000, 1, 'Running Shoes')
+);
+
+$orderRequest = new OrderRequestDTO(
+    amountCents: 15000,
+    currency: CurrencyEnum::EGP,
+    merchantOrderId: 'ORD-' . uniqid(),
+    items: $items
+);
+
+$orderResponse = $orderService->createOrder($orderRequest);
+echo "✅ Order created. ID = {$orderResponse->id}\n";
+
+// Step 2: Billing data (NA allowed for kiosk)
+$billing = new BillingDataDTO(
+    firstName: 'Mohamed',
+    lastName: 'Abdulalim',
+    email: 'mohamed@example.com',
+    phoneNumber: '201000000000',
+    country: 'NA',
+    city: 'NA',
+    street: 'NA',
+    building: 'NA',
+    floor: 'NA',
+    apartment: 'NA',
+    postalCode: 'NA',
+    state: 'NA'
+);
+
+// Step 3: Generate payment key using Kiosk integration ID
+$paymentKeyRequest = new PaymentKeyRequestDTO(
+    orderId: $orderResponse->id,
+    integrationId: $bootstrap->config->integrationIdKiosk,
+    amountCents: $orderResponse->amountCents,
+    currency: $orderResponse->currency,
+    billingData: $billing
+);
+
+$paymentKeyResponse = $paymentKeyService->generate($paymentKeyRequest);
+echo "✅ Payment key generated. Token = {$paymentKeyResponse->token}\n";
+
+// Step 4: Pay via Kiosk
+$kioskRequest = new KioskPaymentRequestDTO($paymentKeyResponse->token);
+$kioskResponse = $kioskService->pay($kioskRequest);
+
+echo "✅ Kiosk Payment initiated successfully:\n";
+echo "Transaction ID    : {$kioskResponse->transactionId}\n";
+echo "Bill Reference    : {$kioskResponse->billReference}\n";
+echo "Order ID          : {$kioskResponse->orderId}\n";
+echo "Currency          : {$kioskResponse->currency->value}\n";
+echo "Created At        : {$kioskResponse->createdAt}\n";
+echo "Updated At        : {$kioskResponse->updatedAt}\n";
+echo "Is Success        : " . ($kioskResponse->success ? 'true' : 'false') . "\n";
+echo "Is Pending        : " . ($kioskResponse->pending ? 'true' : 'false') . "\n";
+echo "Merchant Order ID : {$kioskResponse->merchantOrderId}\n";
+echo "Payment Status    : {$kioskResponse->paymentStatus}\n";
+echo "Status Message    : {$kioskResponse->statusMessage}\n";
+```
 
 ---
 
@@ -187,7 +320,6 @@ try {
 ## 🚧 Roadmap
 
 * [ ] Transactions API
-* [ ] Kiosk payments
 * [ ] Wallet payments
 * [ ] File/DB/Redis token repositories
 * [ ] Full exception mapping (all Paymob error codes)
