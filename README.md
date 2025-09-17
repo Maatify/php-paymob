@@ -20,7 +20,8 @@ Provides a clean, PSR-compliant wrapper around Paymob’s REST APIs with **DTOs,
 * ✅ Logging support (PSR-3 / Monolog).
 * ✅ Orders API (`createOrder`) with `OrderRequestDTO`, `OrderResponseDTO`, `OrderItemDTO`, `OrderItemsDTO`.
 * ✅ Payment Keys API (/acceptance/payment_keys) with `PaymentKeyRequestDTO`, `PaymentKeyResponseDTO`, `BillingDataDTO`.
-* ✅ Kiosk Payments API (pay) with typed response KioskPaymentResponseDTO.
+* ✅ Kiosk Payments API (pay) with typed response `KioskPaymentResponseDTO`.
+* ✅ Facade (PaymobFacade) for full flows (e.g. payViaKiosk) in one call.
 🚧 Upcoming: Transactions API, Wallet Payments.
 
 ---
@@ -87,11 +88,13 @@ src/
  │    ├── WebhookException.php
  │    ├── NetworkException.php
  │    └── PaymobExceptionFactory.php
+ ├── Facade/
+ │    └── PaymobFacade.php   ← full flows (Kiosk now, Wallet coming)
  ├── Http/
  │    ├── ApiClientInterface.php
  │    ├── CurlApiClient.php
  │    ├── GuzzleApiClient.php
- │    └── ApiClient.php  ← unified wrapper
+ │    └── ApiClient.php
  ├── Repository/
  │    ├── TokenRepositoryInterface.php
  │    └── InMemoryTokenRepository.php
@@ -104,7 +107,9 @@ examples/
  ├── bootstrap.php
  ├── auth.php
  ├── order.php
- └── kiosk.php
+ ├── kiosk.php
+ └── facade_kiosk.php
+
 ```
 
 
@@ -118,7 +123,7 @@ See [examples](./examples):
 * [Order Example](./examples/order.php) → Create a new order with items.
 * [Payment Key Example](./examples/payment_key.php) → Generate a payment key after creating an order.
 * [KIOSK Example](./examples/kiosk.php) → Initiate a payment via kiosks (e.g., Aman, Masary).
-
+* [Facade Kiosk Example](./examples/facade_kiosk.php) → Full Kiosk flow (Order + Key + Pay) in one call
 ---
 
 ### Bootstrap
@@ -291,6 +296,29 @@ echo "Payment Status    : {$kioskResponse->paymentStatus}\n";
 echo "Status Message    : {$kioskResponse->statusMessage}\n";
 ```
 
+---
+
+### 🏪 Facade: Pay via Kiosk (One Call)
+
+```php
+use Maatify\Paymob\Facade\PaymobFacade;
+use Maatify\Paymob\Repository\InMemoryTokenRepository;
+
+$facade = new PaymobFacade(
+    config : $bootstrap->config,
+    http   : $bootstrap->client,
+    repo   : new InMemoryTokenRepository(),
+    logger : $bootstrap->logger
+);
+
+$result = $facade->payViaKiosk($orderRequest, $billing);
+
+echo "✅ Order ID        : {$result->order->id}\n";
+echo "✅ Transaction ID  : {$result->kiosk->transactionId}\n";
+echo "✅ Bill Reference  : {$result->kiosk->billReference}\n";
+echo "✅ Payment Status  : {$result->kiosk->paymentStatus}\n";
+
+```
 ---
 
 ## 🔥 Error Handling
