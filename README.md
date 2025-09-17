@@ -22,7 +22,9 @@ Provides a clean, PSR-compliant wrapper around Paymob’s REST APIs with **DTOs,
 * ✅ Payment Keys API (/acceptance/payment_keys) with `PaymentKeyRequestDTO`, `PaymentKeyResponseDTO`, `BillingDataDTO`.
 * ✅ Kiosk Payments API (pay) with typed response `KioskPaymentResponseDTO`.
 * ✅ Facade (PaymobFacade) for full flows (e.g. payViaKiosk) in one call.
-🚧 Upcoming: Transactions API, Wallet Payments.
+* ✅ Wallet Payments API (pay) with typed response `WalletPaymentResponseDTO`.
+* ✅ Facade (PaymobFacade) for full flows (e.g. payViaWallet) in one call.
+🚧 Upcoming: Transactions API (query transaction details).
 
 ---
 
@@ -75,6 +77,8 @@ src/
  │    │    ├── PaymentKeyResponseDTO.php
  │    │    ├── KioskPaymentRequestDTO.php
  │    │    └── KioskPaymentResponseDTO.php
+ │    │    └── WalletPaymentRequestDTO.php
+ │    │    └── WalletPaymentResponseDTO.php
  │    └── Transaction/
  │         └── TransactionResponseDTO.php (🚧 draft)
  ├── Enum/
@@ -98,17 +102,22 @@ src/
  ├── Repository/
  │    ├── TokenRepositoryInterface.php
  │    └── InMemoryTokenRepository.php
- └── Service/
-      ├── AuthService.php
-      ├── OrderService.php
-      ├── PaymentKeyService.php
-      └── KioskPaymentService.php
+ ├── Service/
+ │    ├── AuthService.php
+ │    ├── OrderService.php
+ │    ├── PaymentKeyService.php
+ │    ├── KioskPaymentService.php
+ │    └── WalletPaymentService.php
+ ├── PaymobConfigDTO.php
+ ├── KioskFlowResultDTO.php
+ └── WalletFlowResultDTO.php
 examples/
  ├── bootstrap.php
  ├── auth.php
  ├── order.php
  ├── kiosk.php
- └── facade_kiosk.php
+ ├── facade_kiosk.php
+ └── wallet.php
 
 ```
 
@@ -123,7 +132,9 @@ See [examples](./examples):
 * [Order Example](./examples/order.php) → Create a new order with items.
 * [Payment Key Example](./examples/payment_key.php) → Generate a payment key after creating an order.
 * [KIOSK Example](./examples/kiosk.php) → Initiate a payment via kiosks (e.g., Aman, Masary).
-* [Facade Kiosk Example](./examples/facade_kiosk.php) → Full Kiosk flow (Order + Key + Pay) in one call
+* [Facade Kiosk Example](./examples/facade_kiosk.php) → Full Kiosk flow (Order + Key + Pay) in one call٫
+* [Wallet Example](./examples/wallet.php) → Initiate a payment via Wallet (Vodafone Cash, Orange, Etisalat, WE).
+* [Facade Wallet Example](./examples/facade_wallet.php) → Full Wallet flow (Order + Key + Pay) in one call.
 ---
 
 ### Bootstrap
@@ -348,6 +359,92 @@ echo "✅ Payment Status  : {$result->kiosk->paymentStatus}\n";
 ```
 ---
 
+## 📱 Wallet Payments
+
+Use WalletPaymentService to initiate a payment via mobile wallets (e.g., Vodafone Cash, Orange Money, Etisalat Cash, WE Pay).
+This requires using the Wallet integration ID when generating the payment key.
+### Example
+```php
+use Maatify\Paymob\DTO\Payment\WalletPaymentRequestDTO;
+use Maatify\Paymob\Service\WalletPaymentService;
+
+$paymentKeyRequest = new PaymentKeyRequestDTO(
+    orderId: $orderResponse->id,
+    integrationId: $bootstrap->config->integrationIdWallet,
+    amountCents: $orderResponse->amountCents,
+    currency: $orderResponse->currency,
+    billingData: $billing
+);
+
+$paymentKeyResponse = $paymentKeyService->generate($paymentKeyRequest);
+
+$walletRequest = new WalletPaymentRequestDTO(
+    paymentToken: $paymentKeyResponse->token,
+    walletNumber: '01000000000' // رقم محفظة العميل
+);
+
+$walletResponse = $walletService->pay($walletRequest);
+
+echo "✅ Wallet Payment initiated successfully:\n";
+echo "Transaction ID    : {$walletResponse->transactionId}\n";
+echo "Order ID          : {$walletResponse->orderId}\n";
+echo "Payment Status    : {$walletResponse->paymentStatus}\n";
+echo "Status Message    : {$walletResponse->statusMessage}\n";
+echo "Redirect URL      : {$walletResponse->redirectUrl}\n";
+
+```
+---
+
+### 📱 Facade: Pay via Wallet (One Call)
+```php
+use Maatify\Paymob\Facade\PaymobFacade;
+use Maatify\Paymob\Repository\InMemoryTokenRepository;
+use Maatify\Paymob\DTO\Order\OrderItemDTO;
+use Maatify\Paymob\DTO\Order\OrderItemsDTO;
+use Maatify\Paymob\DTO\Order\OrderRequestDTO;
+use Maatify\Paymob\DTO\Payment\BillingDataDTO;
+use Maatify\Paymob\Enum\CurrencyEnum;
+
+$items = new OrderItemsDTO(
+    new OrderItemDTO('Headphones', 7000, 1),
+    new OrderItemDTO('Charger', 3000, 1, 'Fast Charger')
+);
+
+$orderRequest = new OrderRequestDTO(
+    amountCents: 10000,
+    currency: CurrencyEnum::EGP,
+    merchantOrderId: 'ORD-' . uniqid(),
+    items: $items
+);
+
+$billing = new BillingDataDTO(
+    firstName: 'Mohamed',
+    lastName: 'Abdulalim',
+    email: 'mohamed@example.com',
+    phoneNumber: '201000000000',
+    country: 'EG',
+    city: 'Cairo',
+    street: 'Nile St.',
+    building: '12'
+);
+
+$facade = new PaymobFacade(
+    config : $bootstrap->config,
+    http   : $bootstrap->client,
+    repo   : new InMemoryTokenRepository(),
+    logger : $bootstrap->logger
+);
+
+$result = $facade->payViaWallet($orderRequest, $billing, walletNumber: '01000000000');
+
+echo "✅ Order ID        : {$result->order->id}\n";
+echo "✅ Transaction ID  : {$result->wallet->transactionId}\n";
+echo "✅ Payment Status  : {$result->wallet->paymentStatus}\n";
+echo "✅ Redirect URL    : {$result->wallet->redirectUrl}\n";
+
+```
+
+---
 ## 🔥 Error Handling
 
 All SDK calls may throw typed exceptions.
@@ -375,7 +472,6 @@ try {
 ## 🚧 Roadmap
 
 * [ ] Transactions API
-* [ ] Wallet payments
 * [ ] File/DB/Redis token repositories
 * [ ] Full exception mapping (all Paymob error codes)
 
