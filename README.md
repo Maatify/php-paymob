@@ -304,6 +304,33 @@ echo "Status Message    : {$kioskResponse->statusMessage}\n";
 use Maatify\Paymob\Facade\PaymobFacade;
 use Maatify\Paymob\Repository\InMemoryTokenRepository;
 
+$items = new OrderItemsDTO(
+    new OrderItemDTO('T-shirt', 5000, 1),
+    new OrderItemDTO('Shoes', 10000, 1, 'Running Shoes')
+);
+
+$orderRequest = new OrderRequestDTO(
+    amountCents: 15000,
+    currency: CurrencyEnum::EGP,
+    merchantOrderId: 'ORD-' . uniqid(),
+    items: $items
+);
+
+$billing = new BillingDataDTO(
+    firstName: 'Mohamed',
+    lastName: 'Abdulalim',
+    email: 'mohamed@example.com',
+    phoneNumber: '201000000000',
+    country: 'EG',       //<---- Optional
+    city: 'Cairo',       //<---- Optional
+    street: 'Nile St.',  //<---- Optional
+    building: '12',      //<---- Optional
+    floor: '8',          //<---- Optional
+    apartment: '803',    //<---- Optional
+    postalCode: '12345', //<---- Optional
+    state: 'EG'          //<---- Optional
+);
+
 $facade = new PaymobFacade(
     config : $bootstrap->config,
     http   : $bootstrap->client,
