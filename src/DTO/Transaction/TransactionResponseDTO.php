@@ -24,10 +24,35 @@ final readonly class TransactionResponseDTO
         public CurrencyEnum $currency,
         public bool $success,
         public bool $pending,
-        public ?string $hmac = null,
-        public ?string $paymentKeyClaims = null,
-        public ?string $errorCode = null,
-        public ?string $errorMessage = null,
-        public ?string $createdAt = null
-    ) {}
+        public string $paymentStatus,
+        public string $paymentMethod,
+        public string $createdAt,
+        public ?string $updatedAt,
+        public ?string $merchantOrderId = null,
+        public ?array $sourceData = null,   // e.g., wallet/mobile/card ref
+        public ?string $statusMessage = null,
+        public ?array $row = null,
+    )
+    {
+    }
+
+    public static function fromArray(array $data): self
+    {
+        return new self(
+            id             : (int)$data['id'],
+            orderId        : (int)$data['order']['id'],
+            amountCents    : (int)$data['amount_cents'],
+            currency       : CurrencyEnum::from($data['currency']),
+            success        : (bool)$data['success'],
+            pending        : (bool)($data['pending'] ?? false),
+            paymentStatus  : $data['pending'] ? 'PENDING' : ($data['success'] ? 'SUCCESS' : 'FAILED'),
+            paymentMethod  : $data['payment_method'] ?? ($data['source_data']['sub_type'] ?? 'unknown'),
+            createdAt      : $data['created_at'],
+            updatedAt      : $data['updated_at'] ?? null,
+            merchantOrderId: $data['merchant_order_id'] ?? null,
+            sourceData     : $data['source_data'] ?? null,
+            statusMessage  : $data['data']['message'] ?? null,
+            row            : $data
+        );
+    }
 }

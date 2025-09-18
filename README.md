@@ -24,7 +24,7 @@ Provides a clean, PSR-compliant wrapper around Paymob’s REST APIs with **DTOs,
 * ✅ Facade (PaymobFacade) for full flows (e.g. payViaKiosk) in one call.
 * ✅ Wallet Payments API (pay) with typed response `WalletPaymentResponseDTO`.
 * ✅ Facade (PaymobFacade) for full flows (e.g. payViaWallet) in one call.
-🚧 Upcoming: Transactions API (query transaction details).
+* ✅ Transactions API (/acceptance/transactions/{id}) with typed response `TransactionResponseDTO`.
 
 ---
 
@@ -76,11 +76,11 @@ src/
  │    │    ├── PaymentKeyRequestDTO.php
  │    │    ├── PaymentKeyResponseDTO.php
  │    │    ├── KioskPaymentRequestDTO.php
- │    │    └── KioskPaymentResponseDTO.php
- │    │    └── WalletPaymentRequestDTO.php
+ │    │    ├── KioskPaymentResponseDTO.php
+ │    │    ├── WalletPaymentRequestDTO.php
  │    │    └── WalletPaymentResponseDTO.php
  │    └── Transaction/
- │         └── TransactionResponseDTO.php (🚧 draft)
+ │         └── TransactionResponseDTO.php
  ├── Enum/
  │    └── CurrencyEnum.php
  ├── Exception/
@@ -93,7 +93,7 @@ src/
  │    ├── NetworkException.php
  │    └── PaymobExceptionFactory.php
  ├── Facade/
- │    └── PaymobFacade.php   ← full flows (Kiosk now, Wallet coming)
+ │    └── PaymobFacade.php   ← full flows (Kiosk + Wallet)
  ├── Http/
  │    ├── ApiClientInterface.php
  │    ├── CurlApiClient.php
@@ -107,7 +107,8 @@ src/
  │    ├── OrderService.php
  │    ├── PaymentKeyService.php
  │    ├── KioskPaymentService.php
- │    └── WalletPaymentService.php
+ │    ├── WalletPaymentService.php
+ │    └── TransactionService.php
  ├── PaymobConfigDTO.php
  ├── KioskFlowResultDTO.php
  └── WalletFlowResultDTO.php
@@ -117,8 +118,9 @@ examples/
  ├── order.php
  ├── kiosk.php
  ├── facade_kiosk.php
- └── wallet.php
-
+ ├── wallet.php
+ ├── facade_wallet.php
+ └── transaction.php
 ```
 
 
@@ -135,6 +137,7 @@ See [examples](./examples):
 * [Facade Kiosk Example](./examples/facade_kiosk.php) → Full Kiosk flow (Order + Key + Pay) in one call٫
 * [Wallet Example](./examples/wallet.php) → Initiate a payment via Wallet (Vodafone Cash, Orange, Etisalat, WE).
 * [Facade Wallet Example](./examples/facade_wallet.php) → Full Wallet flow (Order + Key + Pay) in one call.
+* [Transaction Example](./examples/transaction.php) → Query transaction details by transaction ID.
 ---
 
 ### Bootstrap
@@ -443,7 +446,38 @@ echo "✅ Payment Status  : {$result->wallet->paymentStatus}\n";
 echo "✅ Redirect URL    : {$result->wallet->redirectUrl}\n";
 
 ```
+---
+📊 Transactions API
 
+Use TransactionService to fetch transaction details by ID.
+This endpoint is useful for verifying payments, checking status, and reconciling orders.
+
+Example
+```php
+use Maatify\Paymob\Service\TransactionService;
+use Maatify\Paymob\DTO\Transaction\TransactionResponseDTO;
+
+$transactionService = new TransactionService(
+    http: $bootstrap->client,
+    auth: $authService
+);
+
+// Fetch transaction details by ID
+$transactionId = 344212847;
+$transaction = $transactionService->getById($transactionId);
+
+echo "✅ Transaction fetched successfully:\n";
+echo "Transaction ID  : {$transaction->id}\n";
+echo "Order ID        : {$transaction->orderId}\n";
+echo "Amount Cents    : {$transaction->amountCents}\n";
+echo "Currency        : {$transaction->currency->value}\n";
+echo "Status          : {$transaction->paymentStatus}\n";
+echo "Pending?        : " . ($transaction->pending ? 'true' : 'false') . "\n";
+echo "Success?        : " . ($transaction->success ? 'true' : 'false') . "\n";
+echo "Created At      : {$transaction->createdAt}\n";
+echo "Updated At      : {$transaction->updatedAt}\n";
+
+```
 ---
 ## 🔥 Error Handling
 
@@ -471,7 +505,6 @@ try {
 
 ## 🚧 Roadmap
 
-* [ ] Transactions API
 * [ ] File/DB/Redis token repositories
 * [ ] Full exception mapping (all Paymob error codes)
 

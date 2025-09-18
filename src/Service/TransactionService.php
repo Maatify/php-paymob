@@ -13,10 +13,11 @@ declare(strict_types=1);
 
 namespace Maatify\Paymob\Service;
 
-use Maatify\Paymob\DTO\Payment\PaymentKeyResponseDTO;
 use Maatify\Paymob\DTO\Transaction\TransactionResponseDTO;
-use Maatify\Paymob\Enum\CurrencyEnum;
+use Maatify\Paymob\Exception\ApiException;
+use Maatify\Paymob\Exception\NetworkException;
 use Maatify\Paymob\Exception\PaymobExceptionFactory;
+use Maatify\Paymob\Exception\TransactionException;
 use Maatify\Paymob\Http\ApiClientInterface;
 use Throwable;
 
@@ -30,9 +31,12 @@ final readonly class TransactionService
     }
 
     /**
-     * Retrieve single transaction by ID
+     * Get transaction details by ID.
      *
-     * @throws Throwable
+     * @param   int  $id
+     *
+     * @return TransactionResponseDTO
+     * @throws TransactionException|NetworkException|ApiException
      */
     public function getTransaction(int $id): TransactionResponseDTO
     {
@@ -46,7 +50,7 @@ final readonly class TransactionService
                 headers: ['Authorization' => $authToken]
             );
 
-            return $this->mapResponse($response);
+            return TransactionResponseDTO::fromArray($response);
         } catch (Throwable $e) {
             // handle unauthorized → retry with fresh token
             if ($e->getCode() === 401) {
@@ -57,7 +61,7 @@ final readonly class TransactionService
                     headers: ['Authorization' => $newToken]
                 );
 
-                return $this->mapResponse($response);
+                return TransactionResponseDTO::fromArray($response);
             }
             throw PaymobExceptionFactory::fromResponse(
                 ['message' => $e->getMessage()],
@@ -65,22 +69,5 @@ final readonly class TransactionService
                 'transaction'
             );
         }
-    }
-
-    private function mapResponse(array $response): TransactionResponseDTO
-    {
-        return new TransactionResponseDTO(
-            id              : (int)$response['id'],
-            orderId         : (int)$response['order']['id'],
-            amountCents     : (int)$response['amount_cents'],
-            currency        : CurrencyEnum::from($response['currency']),
-            success         : (bool)$response['success'],
-            pending         : (bool)$response['pending'],
-            hmac            : $response['hmac'] ?? null,
-            paymentKeyClaims: $response['payment_key_claims'] ?? null,
-            errorCode       : $response['error_occured'] ? ($response['data']['gateway_integration_pk'] ?? null) : null,
-            errorMessage    : $response['data']['message'] ?? null,
-            createdAt       : $response['created_at'] ?? null,
-        );
     }
 }

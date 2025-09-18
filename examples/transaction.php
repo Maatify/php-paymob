@@ -32,21 +32,29 @@ $transactionService = new TransactionService($bootstrap->client, $authService);
 
 //$transactionId = 386897265;
 //$transactionId = "ORD-68c9a5e549a1d";
-$transactionId = 344212847;
+//$transactionId = 344212847;
 
 try {
-    $txn = $transactionService->getTransaction($transactionId);
+    // Transaction ID من عملية سابقة
+    $transactionId = 344212847;
 
-    if ($txn->success) {
-        echo "✅ Transaction successful: {$txn->amountCents} {$txn->currency->value}";
-    } elseif ($txn->pending) {
-        echo "⌛ Transaction pending...";
-    } else {
-        echo "❌ Transaction failed: {$txn->errorMessage}";
-    }
-} catch (AuthException|OrderException|TransactionException|NetworkException|ApiException $e) {
-    echo "❌ SDK error: " . $e->getMessage() . PHP_EOL;
+    $transaction = $transactionService->getTransaction($transactionId);
+
+    echo "✅ Transaction details:\n";
+    echo "ID              : {$transaction->id}\n";
+    echo "Order ID        : {$transaction->orderId}\n";
+    echo "Amount (cents)  : {$transaction->amountCents}\n";
+    echo "Currency        : {$transaction->currency->value}\n";
+    echo "Success         : " . ($transaction->success ? 'true' : 'false') . "\n";
+    echo "Pending         : " . ($transaction->pending ? 'true' : 'false') . "\n";
+    echo "Status          : {$transaction->paymentStatus}\n";
+    echo "Created At      : {$transaction->createdAt}\n";
+    echo "Updated At      : {$transaction->updatedAt}\n";
+
+} catch (AuthException|TransactionException|NetworkException|ApiException $e) {
+    echo "❌ Error fetching transaction: " . $e->getMessage() . PHP_EOL;
     print_r($e->getResponse());
 } catch (Throwable $e) {
     echo "❌ Unexpected error: " . $e->getMessage();
 }
+
