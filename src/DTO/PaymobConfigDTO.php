@@ -13,13 +13,15 @@ declare(strict_types=1);
 
 namespace Maatify\Paymob\DTO;
 
-final class PaymobConfigDTO
+final readonly class PaymobConfigDTO
 {
+
     public function __construct(
-        public readonly string $apiKey,          // الـ API Key الأساسي
-        public readonly int $integrationIdCard,  // Integration ID للكروت
-        public readonly int $integrationIdKiosk, // Integration ID للكيوسك
-        public readonly int $integrationIdWallet,// Integration ID للمحافظ
-        public readonly string $baseUrl = 'https://accept.paymobsolutions.com/api' // URL الأساسي
-    ) {}
+        public string $apiKey,          // الـ API Key الأساسي
+        public int $integrationIdCard,  // Integration ID للكروت
+        public int $integrationIdKiosk, // Integration ID للكيوسك
+        public int $integrationIdWallet,// Integration ID للمحافظ
+        public string $baseUrl = 'https://accept.paymobsolutions.com/api', // URL الأساسي
+        public string $hmacSecret,
+) {}
 }

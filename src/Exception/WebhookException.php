@@ -13,4 +13,4 @@ declare(strict_types=1);
 
 namespace Maatify\Paymob\Exception;
 
-class WebhookException extends ApiException {}
+class WebhookException extends PaymobException {}

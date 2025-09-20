@@ -64,6 +64,7 @@ return (function (): PaymobExampleBootstrap {
         integrationIdKiosk : (int)$_ENV['PAYMOB_INTEGRATION_ID_KIOSK'],
         integrationIdWallet: (int)$_ENV['PAYMOB_INTEGRATION_ID_WALLET'],
         baseUrl            : $_ENV['PAYMOB_BASE_URL'],
+        hmacSecret         : $_ENV['PAYMOB_HMAC_SECRET'],
     );
 
     // Pick ONE client implementation 👇

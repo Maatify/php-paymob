@@ -109,6 +109,8 @@ src/
  │    ├── KioskPaymentService.php
  │    ├── WalletPaymentService.php
  │    └── TransactionService.php
+ ├── Webhook/
+ │    ├── WebhookValidator.php
  ├── PaymobConfigDTO.php
  ├── KioskFlowResultDTO.php
  └── WalletFlowResultDTO.php
@@ -120,7 +122,8 @@ examples/
  ├── facade_kiosk.php
  ├── wallet.php
  ├── facade_wallet.php
- └── transaction.php
+ ├── transaction.php
+ └── webhook.php
 ```
 
 
@@ -478,6 +481,33 @@ echo "Created At      : {$transaction->createdAt}\n";
 echo "Updated At      : {$transaction->updatedAt}\n";
 
 ```
+---
+🌐 Webhooks
+
+Use WebhookValidator to verify Paymob webhook callbacks (e.g., transaction success/failure notifications).
+The validator automatically computes the HMAC using your configured secret and compares it against the payload.
+
+⚠️ Make sure to set PAYMOB_HMAC_SECRET in your .env.
+
+Example
+```php
+use Maatify\Paymob\Webhook\WebhookValidator;
+use Maatify\Paymob\Exception\WebhookException;
+
+$validator = new WebhookValidator($bootstrap->config);
+
+try {
+    $payload = $validator->validate(
+        json_decode(file_get_contents('php://input'), true)
+    );
+
+    echo "✅ Webhook valid for Transaction #{$payload->transactionId}\n";
+} catch (WebhookException $e) {
+    echo "❌ Invalid webhook: " . $e->getMessage();
+}
+
+```
+
 ---
 ## 🔥 Error Handling
 
