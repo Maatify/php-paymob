@@ -1,5 +1,5 @@
 {
-  "name": "maatify/paymob-php",
+  "name": "maatify/php-paymob",
   "description": "PHP SDK for Paymob APIs (Egypt) – reference: https://developers.paymob.com/egypt/ . Supports Auth, Orders, Transactions, and Kiosk payments.",
   "type": "library",
   "license": "MIT",
