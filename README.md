@@ -31,14 +31,14 @@ Provides a clean, PSR-compliant wrapper around Paymob’s REST APIs with **DTOs,
 ## 📦 Installation
 
 ```bash
-composer require maatify/paymob-php:dev-main
+composer require maatify/php-paymob:dev-main
 ````
 
 If the repository is private:
 
 ```bash
-composer config repositories.paymob-php vcs git@github.com:maatify/paymob-php.git
-composer require maatify/paymob-php:dev-main
+composer config repositories.php-paymob vcs git@github.com:Maatify/php-paymob.git
+composer require maatify/php-paymob:dev-main
 ```
 
 ---
