@@ -6,8 +6,11 @@ require_once __DIR__ . '/bootstrap.php';
 
 use Maatify\Paymob\ProviderVerification\Support\CaptureSession;
 use Maatify\Paymob\ProviderVerification\Support\CapturingApiClient;
+use Maatify\Paymob\ProviderVerification\Support\RetainedRunRecovery;
 use Maatify\Paymob\ProviderVerification\Support\SemanticSanitizer;
 use Maatify\Paymob\ProviderVerification\Support\VerificationConfig;
+
+require_once __DIR__ . '/Support/CapturingApiClient.php';
 
 function verify(bool $condition, string $message): void
 {
@@ -21,10 +24,94 @@ $configurationDirectory = null;
 $artifactPath = null;
 $artifactDirectory = null;
 $rawDirectory = null;
+$failureArtifactPath = null;
+$recoveryArtifactPath = null;
+$recoveryFailureArtifactPath = null;
+$syntheticRecoveryDirectory = null;
+$syntheticRecoveryFailureDirectory = null;
+$syntheticRecoveryConfigDirectory = null;
 $rawCleaned = false;
 $failure = null;
 
 try {
+    verify(ini_get('zend.exception_ignore_args') === '1', 'Exception argument diagnostics are not disabled.');
+    echo "PASS zend.exception_ignore_args fail-closed setting\n";
+
+    $bootstrapPath = realpath(__DIR__ . '/bootstrap.php');
+    verify(is_string($bootstrapPath), 'Bootstrap path could not be resolved.');
+    $deprecationCode = 'require ' . var_export($bootstrapPath, true)
+        . '; function deprecation_probe($marker) { trigger_error("synthetic deprecation probe", E_USER_DEPRECATED); }'
+        . ' deprecation_probe("argument-secret-marker");';
+    $process = proc_open([PHP_BINARY, '-r', $deprecationCode], [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+    verify(is_resource($process), 'Could not launch the safe diagnostic self-check subprocess.');
+    fclose($pipes[0]);
+    $deprecationStdout = stream_get_contents($pipes[1]);
+    $deprecationStderr = stream_get_contents($pipes[2]);
+    fclose($pipes[1]);
+    fclose($pipes[2]);
+    $deprecationExit = proc_close($process);
+    verify($deprecationExit === 0 && $deprecationStdout === '', 'Deprecation probe did not complete safely.');
+    verify(
+        is_string($deprecationStderr)
+        && str_contains($deprecationStderr, 'E_USER_DEPRECATED')
+        && str_contains($deprecationStderr, 'synthetic deprecation probe')
+        && preg_match('/^E_USER_DEPRECATED [^:\r\n]+:\d+ synthetic deprecation probe\r?\n$/D', $deprecationStderr) === 1
+        && !str_contains($deprecationStderr, 'argument-secret-marker')
+        && !str_contains($deprecationStderr, 'Stack trace'),
+        'Deprecation handler exposed arguments or a stack trace.',
+    );
+
+    $exceptionCode = 'require ' . var_export($bootstrapPath, true)
+        . '; function exception_probe($marker) { try { throw new RuntimeException("synthetic exception probe"); }'
+        . ' catch (Throwable $exception) { echo json_encode($exception->getTrace()); } }'
+        . ' exception_probe("argument-secret-marker");';
+    $process = proc_open([PHP_BINARY, '-r', $exceptionCode], [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+    verify(is_resource($process), 'Could not launch the exception argument self-check subprocess.');
+    fclose($pipes[0]);
+    $exceptionStdout = stream_get_contents($pipes[1]);
+    $exceptionStderr = stream_get_contents($pipes[2]);
+    fclose($pipes[1]);
+    fclose($pipes[2]);
+    $exceptionExit = proc_close($process);
+    verify(
+        $exceptionExit === 0 && $exceptionStderr === '' && is_string($exceptionStdout)
+        && !str_contains($exceptionStdout, 'argument-secret-marker')
+        && !str_contains($exceptionStdout, 'args'),
+        'zend.exception_ignore_args did not remove arguments from Throwable trace metadata.',
+    );
+    echo "PASS argument-free exception and deprecation diagnostics\n";
+
+    $curlCloseName = 'curl_' . 'close';
+    $harnessFiles = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator(__DIR__, FilesystemIterator::SKIP_DOTS),
+    );
+    foreach ($harnessFiles as $harnessFile) {
+        if (!$harnessFile->isFile() || $harnessFile->getExtension() !== 'php') {
+            continue;
+        }
+        $source = file_get_contents($harnessFile->getPathname());
+        verify(is_string($source), 'A harness PHP source file could not be read for the lifecycle check.');
+        verify(
+            preg_match('/\\b' . preg_quote($curlCloseName, '/') . '\\s*\\(/', $source) !== 1,
+            'Harness-owned deprecated cURL close call remains.',
+        );
+    }
+    echo "PASS cURL handle lifecycle scan\n";
+
+    $transportSource = file_get_contents(__DIR__ . '/Support/CapturingApiClient.php');
+    verify(is_string($transportSource), 'Transport source could not be read for the offline self-check.');
+    $selfCheckMethodMatch = preg_match(
+        '/public static function selfCheckTransportConfiguration\(\): void\s*\{(.*?)\n    \}/s',
+        $transportSource,
+        $selfCheckMethod,
+    );
+    $curlExecName = 'curl_' . 'exec';
+    verify(
+        $selfCheckMethodMatch === 1
+        && preg_match('/\\b' . preg_quote($curlExecName, '/') . '\\s*\\(/', $selfCheckMethod[1]) !== 1,
+        'Transport self-check contains a cURL execution call.',
+    );
+
     verify(extension_loaded('curl'), 'The cURL extension is not loaded.');
     CapturingApiClient::selfCheckTransportConfiguration();
     echo "PASS cURL transport configuration without network execution\n";
@@ -296,6 +383,51 @@ JSON;
     $captureSession->markSanitizedArtifactSafe();
     echo "PASS durable sanitized artifact, permissions, bytes, hash, read-back, JSON, and leak guard\n";
 
+    $failureDiagnostic = $captureSession->failureDiagnostic(
+        'self-check-failure',
+        new RuntimeException('synthetic safe failure detail'),
+        ['configured-api-key-example', 'configured-hmac-secret-example'],
+    );
+    $failureSanitizer = new SemanticSanitizer(
+        ['configured-api-key-example', 'configured-hmac-secret-example'],
+        '01010101010',
+    );
+    verify(!$failureSanitizer->containsSensitiveValues($failureDiagnostic), 'Synthetic failure diagnostic contains a secret.');
+    $failureArtifact = CaptureSession::persistJsonArtifact(
+        $failureDiagnostic,
+        basename($rawDirectory) . '-failure-diagnostic.json',
+    );
+    $failureArtifactPath = $failureArtifact['path'];
+    $failureBytes = file_get_contents($failureArtifactPath);
+    verify(is_string($failureBytes), 'Synthetic failure artifact could not be read back.');
+    verify(strlen($failureBytes) === $failureArtifact['bytes'], 'Synthetic failure artifact byte count does not match.');
+    verify(hash_equals($failureArtifact['sha256'], hash('sha256', $failureBytes)), 'Synthetic failure artifact SHA-256 does not match.');
+    verify((fileperms(dirname($failureArtifactPath)) & 0777) === 0700, 'Failure artifact directory mode is not 0700.');
+    verify((fileperms($failureArtifactPath) & 0777) === 0600, 'Failure artifact file mode is not 0600.');
+    $persistedFailure = json_decode($failureBytes, true, 512, JSON_THROW_ON_ERROR);
+    verify(is_array($persistedFailure), 'Synthetic failure artifact JSON did not decode.');
+    verify(!$failureSanitizer->containsSensitiveValues($persistedFailure), 'Persisted failure artifact contains a secret.');
+    verify(
+        isset($persistedFailure['failing_stage'], $persistedFailure['exception_class'], $persistedFailure['captured_attempts'])
+        && count($persistedFailure['captured_attempts']) === 1,
+        'Synthetic failure artifact omitted stage, exception, or captured attempt metadata.',
+    );
+    $failureStdoutEquivalent = [
+        'result' => $persistedFailure['result'],
+        'failing_stage' => $persistedFailure['failing_stage'],
+        'exception_class' => $persistedFailure['exception_class'],
+        'exception_message' => $persistedFailure['exception_message'],
+        'failure_artifact_path' => $failureArtifact['path'],
+        'failure_artifact_bytes' => $failureArtifact['bytes'],
+        'failure_artifact_sha256' => $failureArtifact['sha256'],
+        'raw_evidence_retained' => $persistedFailure['raw_evidence_retained'],
+        'raw_storage_directory' => $persistedFailure['raw_storage_directory'],
+        'captured_attempt_count' => count($persistedFailure['captured_attempts']),
+    ];
+    verify(!array_key_exists('captured_attempts', $failureStdoutEquivalent), 'Failure stdout summary contains the full attempt list.');
+    verify(!$failureSanitizer->containsSensitiveValues($failureStdoutEquivalent), 'Failure stdout summary contains a secret.');
+    echo "PASS durable failure diagnostic, concise handoff, bytes, hash, read-back, JSON, and leak guard\n";
+
     verify(is_dir($rawDirectory), 'Raw evidence directory is missing before cleanup.');
     verify(count(glob($rawDirectory . DIRECTORY_SEPARATOR . '*') ?: []) === 3, 'Raw request/response evidence is incomplete before cleanup.');
     verify($captureSession->cleanupRawEvidence(), 'Raw evidence cleanup failed.');
@@ -314,6 +446,200 @@ JSON;
         verify(!str_contains($artifactBytes, $syntheticSensitiveValue), 'Retained sanitized artifact contains a synthetic secret or PII literal.');
     }
     echo "PASS raw evidence retained before cleanup and removed afterward; sanitized artifact retained\n";
+
+    $recoverySource = file_get_contents(__DIR__ . '/Support/RetainedRunRecovery.php');
+    $recoveryEntryPoint = file_get_contents(__DIR__ . '/recover.php');
+    verify(is_string($recoverySource) && is_string($recoveryEntryPoint), 'Recovery source could not be inspected.');
+    foreach (['curl_' . 'init', 'curl_' . 'exec', 'ApiClient' . 'Interface', 'Auth' . 'Service', 'Order' . 'Service'] as $forbiddenCall) {
+        verify(
+            !str_contains($recoverySource, $forbiddenCall) && !str_contains($recoveryEntryPoint, $forbiddenCall),
+            'Offline recovery source contains a provider-network dependency.',
+        );
+    }
+
+    $temporaryRoot = realpath(sys_get_temp_dir());
+    verify(is_string($temporaryRoot), 'Operating-system temporary directory could not be resolved.');
+    $privateNamespace = $temporaryRoot . DIRECTORY_SEPARATOR . 'maatify-paymob-provider-verification';
+    if (!is_dir($privateNamespace)) {
+        verify(mkdir($privateNamespace, 0700), 'Private evidence namespace could not be created for recovery self-check.');
+        chmod($privateNamespace, 0700);
+    }
+    $syntheticRecoveryDirectory = $privateNamespace . DIRECTORY_SEPARATOR . 'run-self-check-' . bin2hex(random_bytes(6));
+    verify(mkdir($syntheticRecoveryDirectory, 0700), 'Synthetic retained run could not be created.');
+    chmod($syntheticRecoveryDirectory, 0700);
+
+    $syntheticRecoveryConfigDirectory = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'paymob-recovery-config-' . bin2hex(random_bytes(6));
+    verify(mkdir($syntheticRecoveryConfigDirectory, 0700), 'Synthetic recovery configuration directory could not be created.');
+    $recoveryConfigPath = $syntheticRecoveryConfigDirectory . DIRECTORY_SEPARATOR . '.env';
+    $recoveryConfig = "PAYMOB_API_KEY=recovery-self-check-api-secret\n"
+        . "PAYMOB_HMAC_SECRET=recovery-self-check-hmac-secret\n"
+        . "PAYMOB_BASE_URL=https://accept.paymob.com/api\n"
+        . "PAYMOB_INTEGRATION_ID_WALLET=73486\n"
+        . "PAYMOB_TEST_WALLET_MSISDN=01010101010\n";
+    verify(file_put_contents($recoveryConfigPath, $recoveryConfig) === strlen($recoveryConfig), 'Synthetic recovery configuration could not be written.');
+    chmod($recoveryConfigPath, 0600);
+
+    $syntheticExchanges = [
+        [
+            'https://accept.paymob.com/api/auth/tokens',
+            '{"api_key":"recovery-self-check-api-secret"}',
+            '{"token":"recovery-self-check-auth-token","profile":{"id":456789,"email":"recovery-person@example.org"},"issued_at":"2026-10-03T10:00:00Z"}',
+        ],
+        [
+            'https://accept.paymob.com/api/ecommerce/orders',
+            '{"amount_cents":15000,"currency":"EGP","merchant_order_id":"recovery-private-order-ref","items":[{"name":"Synthetic wallet order","amount_cents":15000,"quantity":1}]}',
+            '{"id":123456,"merchant_order_id":"recovery-private-order-ref","payment_status":"UNPAID","created_at":"2026-10-03T10:01:00Z"}',
+        ],
+        [
+            'https://accept.paymob.com/api/acceptance/payment_keys',
+            '{"auth_token":"recovery-self-check-auth-token","order_id":123456,"integration_id":73486,"amount_cents":15000,"currency":"EGP"}',
+            '{"token":"recovery-self-check-payment-token","order_id":123456,"integration_id":73486,"currency":"EGP","status":"issued"}',
+        ],
+        [
+            'https://accept.paymob.com/api/acceptance/payments/pay',
+            '{"source":{"identifier":"01010101010","subtype":"WALLET"},"payment_token":"recovery-self-check-payment-token"}',
+            '{"success":false,"pending":true,"payment_status":"UNPAID","order_id":123456,"transaction_id":887766,"integration_id":73486,"merchant_order_id":"recovery-private-order-ref","source":{"identifier":"01010101010","subtype":"WALLET"},"created_at":"2026-10-03T10:02:00Z","message":"Transaction Created Successfully"}',
+        ],
+    ];
+    foreach ($syntheticExchanges as $index => [$url, $requestBody, $responseBody]) {
+        $prefix = str_pad((string)($index + 1), 4, '0', STR_PAD_LEFT);
+        foreach ([
+            $prefix . '-request-url.txt' => $url,
+            $prefix . '-request-body.bin' => $requestBody,
+            $prefix . '-response-body.bin' => $responseBody,
+        ] as $fileName => $contents) {
+            $path = $syntheticRecoveryDirectory . DIRECTORY_SEPARATOR . $fileName;
+            verify(file_put_contents($path, $contents, LOCK_EX) === strlen($contents), 'Synthetic raw exchange file could not be written.');
+            chmod($path, 0600);
+        }
+    }
+
+    $sourceSnapshot = [];
+    foreach (scandir($syntheticRecoveryDirectory) ?: [] as $fileName) {
+        if ($fileName === '.' || $fileName === '..') {
+            continue;
+        }
+        $sourcePath = $syntheticRecoveryDirectory . DIRECTORY_SEPARATOR . $fileName;
+        $sourceSnapshot[$fileName] = [filesize($sourcePath), hash_file('sha256', $sourcePath), fileperms($sourcePath) & 0777];
+    }
+
+    $recoveryResult = RetainedRunRecovery::recover($syntheticRecoveryConfigDirectory, $syntheticRecoveryDirectory, 'wallet');
+    verify($recoveryResult['result'] === 'PASS', 'Synthetic offline recovery failed.');
+    verify($recoveryResult['exchange_count'] === 4, 'Synthetic recovery did not discover four triplets.');
+    verify(
+        $recoveryResult['recovered_stages'] === ['auth', 'order', 'payment-key-wallet', 'wallet-initiation'],
+        'Synthetic recovery derived an incorrect stage sequence.',
+    );
+    verify($recoveryResult['source_raw_retained'] === true, 'Recovery did not retain the synthetic source run.');
+    $recoveryReport = $recoveryResult['report'];
+    verify(
+        $recoveryReport['source']['exchange_count'] === 4
+        && $recoveryReport['source']['source_raw_retained'] === true,
+        'Recovery report omitted source retention or exchange count.',
+    );
+    $recoveredWallet = $recoveryReport['exchanges'][3];
+    verify($recoveredWallet['method'] === null, 'Recovery invented an unavailable request method.');
+    foreach (['http_status', 'transport_ok', 'curl_errno', 'curl_error', 'request_header_names', 'response_header_names'] as $unavailableField) {
+        verify($recoveredWallet[$unavailableField] === null, 'Recovery invented unavailable runtime metadata.');
+    }
+    verify(
+        $recoveredWallet['metadata_source'] === 'unavailable_from_retained_raw',
+        'Recovery omitted the unavailable metadata source marker.',
+    );
+    verify(
+        $recoveredWallet['sanitized_request']['source']['identifier'] === '01010101010',
+        'Recovery did not preserve the public wallet test input.',
+    );
+    verify(
+        $recoveredWallet['sanitized_response_fixture_candidate']['success'] === false
+        && $recoveredWallet['sanitized_response_fixture_candidate']['pending'] === true
+        && $recoveredWallet['sanitized_response_fixture_candidate']['payment_status'] === 'UNPAID'
+        && $recoveredWallet['sanitized_response_fixture_candidate']['message'] === 'Transaction Created Successfully',
+        'Recovery changed wallet response semantics.',
+    );
+    $orderResponse = $recoveryReport['exchanges'][1]['sanitized_response_fixture_candidate'];
+    $paymentKeyRequest = $recoveryReport['exchanges'][2]['sanitized_request'];
+    verify(
+        $orderResponse['id'] === $paymentKeyRequest['order_id']
+        && $paymentKeyRequest['order_id'] === $recoveredWallet['sanitized_response_fixture_candidate']['order_id'],
+        'Repeated order IDs are not consistent across recovered exchanges.',
+    );
+    verify(
+        $recoveredWallet['sanitized_response_fixture_candidate']['order_id']
+        !== $recoveredWallet['sanitized_response_fixture_candidate']['transaction_id'],
+        'Distinct order and transaction IDs collapsed during recovery.',
+    );
+    verify(
+        $orderResponse['merchant_order_id']
+        === $recoveredWallet['sanitized_response_fixture_candidate']['merchant_order_id'],
+        'Repeated private references are not consistent across recovered exchanges.',
+    );
+    verify(
+        $recoveryReport['leak_guard_result'] === 'PASS'
+        && $recoveryReport['referential_consistency_result'] === 'PASS',
+        'Recovery omitted leak-guard or referential-consistency evidence.',
+    );
+    $recoveryArtifactPath = $recoveryResult['artifact']['path'];
+    $recoveryArtifactBytes = file_get_contents($recoveryArtifactPath);
+    verify(is_string($recoveryArtifactBytes), 'Synthetic recovery artifact could not be read back.');
+    verify(strlen($recoveryArtifactBytes) === $recoveryResult['artifact']['bytes'], 'Recovery artifact byte count does not match.');
+    verify(hash_equals($recoveryResult['artifact']['sha256'], hash('sha256', $recoveryArtifactBytes)), 'Recovery artifact SHA-256 does not match.');
+    verify((fileperms(dirname($recoveryArtifactPath)) & 0777) === 0700, 'Recovery artifact directory mode is not 0700.');
+    verify((fileperms($recoveryArtifactPath) & 0777) === 0600, 'Recovery artifact file mode is not 0600.');
+    foreach ([
+        'recovery-self-check-api-secret',
+        'recovery-self-check-hmac-secret',
+        'recovery-self-check-auth-token',
+        'recovery-self-check-payment-token',
+        'recovery-private-order-ref',
+        'recovery-person@example.org',
+    ] as $sensitiveLiteral) {
+        verify(!str_contains($recoveryArtifactBytes, $sensitiveLiteral), 'Recovery artifact contains a synthetic secret or PII literal.');
+    }
+    $afterRecoverySnapshot = [];
+    foreach (scandir($syntheticRecoveryDirectory) ?: [] as $fileName) {
+        if ($fileName === '.' || $fileName === '..') {
+            continue;
+        }
+        $sourcePath = $syntheticRecoveryDirectory . DIRECTORY_SEPARATOR . $fileName;
+        $afterRecoverySnapshot[$fileName] = [filesize($sourcePath), hash_file('sha256', $sourcePath), fileperms($sourcePath) & 0777];
+    }
+    verify($sourceSnapshot === $afterRecoverySnapshot, 'Recovery modified the synthetic source run.');
+    echo "PASS network-free retained-run recovery, stage derivation, sanitization, metadata honesty, referential consistency, and retained source\n";
+
+    $syntheticRecoveryFailureDirectory = $privateNamespace . DIRECTORY_SEPARATOR . 'run-self-check-failure-' . bin2hex(random_bytes(6));
+    verify(mkdir($syntheticRecoveryFailureDirectory, 0700), 'Synthetic invalid retained run could not be created.');
+    chmod($syntheticRecoveryFailureDirectory, 0700);
+    $incompleteRawPath = $syntheticRecoveryFailureDirectory . DIRECTORY_SEPARATOR . '0001-request-url.txt';
+    $incompleteRawUrl = 'https://accept.paymob.com/api/auth/tokens';
+    verify(file_put_contents($incompleteRawPath, $incompleteRawUrl) === strlen($incompleteRawUrl), 'Synthetic incomplete raw file could not be written.');
+    chmod($incompleteRawPath, 0600);
+    $recoveryFailure = RetainedRunRecovery::recover(
+        $syntheticRecoveryConfigDirectory,
+        $syntheticRecoveryFailureDirectory,
+        'wallet',
+    );
+    verify($recoveryFailure['result'] === 'FAIL', 'Incomplete synthetic retained run unexpectedly recovered.');
+    verify($recoveryFailure['source_raw_retained'] === true, 'Failed recovery did not retain its source run.');
+    verify(is_array($recoveryFailure['failure_artifact']), 'Failed recovery did not persist a durable diagnostic artifact.');
+    $recoveryFailureArtifactPath = $recoveryFailure['failure_artifact']['path'];
+    $recoveryFailureBytes = file_get_contents($recoveryFailureArtifactPath);
+    verify(is_string($recoveryFailureBytes), 'Recovery failure diagnostic could not be read back.');
+    verify(
+        strlen($recoveryFailureBytes) === $recoveryFailure['failure_artifact']['bytes']
+        && hash_equals($recoveryFailure['failure_artifact']['sha256'], hash('sha256', $recoveryFailureBytes)),
+        'Recovery failure diagnostic byte count or SHA-256 does not match.',
+    );
+    verify(
+        !str_contains($recoveryFailureBytes, 'recovery-self-check-api-secret')
+        && !str_contains($recoveryFailureBytes, 'recovery-self-check-hmac-secret'),
+        'Recovery failure diagnostic contains a synthetic configured secret.',
+    );
+    verify(
+        is_file($incompleteRawPath) && file_get_contents($incompleteRawPath) === $incompleteRawUrl,
+        'Failed recovery modified its incomplete source run.',
+    );
+    echo "PASS failed offline recovery persists a safe diagnostic and retains its incomplete source\n";
 } catch (Throwable $exception) {
     $failure = $exception;
 } finally {
@@ -327,11 +653,13 @@ JSON;
         }
     }
 
-    if ($artifactPath !== null && is_file($artifactPath) && !unlink($artifactPath)) {
-        $failure ??= new RuntimeException('Self-check sanitized artifact cleanup failed.');
-    }
-    if ($artifactPath !== null && file_exists($artifactPath)) {
-        $failure ??= new RuntimeException('Self-check sanitized artifact remains after final cleanup.');
+    foreach ([$artifactPath, $failureArtifactPath, $recoveryArtifactPath, $recoveryFailureArtifactPath] as $selfCheckArtifactPath) {
+        if ($selfCheckArtifactPath !== null && is_file($selfCheckArtifactPath) && !unlink($selfCheckArtifactPath)) {
+            $failure ??= new RuntimeException('Self-check sanitized artifact cleanup failed.');
+        }
+        if ($selfCheckArtifactPath !== null && file_exists($selfCheckArtifactPath)) {
+            $failure ??= new RuntimeException('Self-check sanitized artifact remains after final cleanup.');
+        }
     }
     if ($artifactDirectory !== null && is_dir($artifactDirectory)) {
         $entries = scandir($artifactDirectory);
@@ -346,6 +674,43 @@ JSON;
     }
     if ($configurationDirectory !== null && is_dir($configurationDirectory) && !rmdir($configurationDirectory)) {
         $failure ??= new RuntimeException('Self-check synthetic configuration directory cleanup failed.');
+    }
+    if ($syntheticRecoveryDirectory !== null && is_dir($syntheticRecoveryDirectory)) {
+        foreach (scandir($syntheticRecoveryDirectory) ?: [] as $fileName) {
+            if ($fileName === '.' || $fileName === '..') {
+                continue;
+            }
+            $path = $syntheticRecoveryDirectory . DIRECTORY_SEPARATOR . $fileName;
+            if (is_file($path) && !is_link($path) && !unlink($path)) {
+                $failure ??= new RuntimeException('Synthetic retained-run cleanup failed.');
+            }
+        }
+        if (is_dir($syntheticRecoveryDirectory) && !rmdir($syntheticRecoveryDirectory)) {
+            $failure ??= new RuntimeException('Synthetic retained-run directory cleanup failed.');
+        }
+    }
+    if ($syntheticRecoveryFailureDirectory !== null && is_dir($syntheticRecoveryFailureDirectory)) {
+        foreach (scandir($syntheticRecoveryFailureDirectory) ?: [] as $fileName) {
+            if ($fileName === '.' || $fileName === '..') {
+                continue;
+            }
+            $path = $syntheticRecoveryFailureDirectory . DIRECTORY_SEPARATOR . $fileName;
+            if (is_file($path) && !is_link($path) && !unlink($path)) {
+                $failure ??= new RuntimeException('Synthetic incomplete retained-run cleanup failed.');
+            }
+        }
+        if (is_dir($syntheticRecoveryFailureDirectory) && !rmdir($syntheticRecoveryFailureDirectory)) {
+            $failure ??= new RuntimeException('Synthetic incomplete retained-run directory cleanup failed.');
+        }
+    }
+    if ($syntheticRecoveryConfigDirectory !== null && is_file($syntheticRecoveryConfigDirectory . DIRECTORY_SEPARATOR . '.env')) {
+        if (!unlink($syntheticRecoveryConfigDirectory . DIRECTORY_SEPARATOR . '.env')) {
+            $failure ??= new RuntimeException('Synthetic recovery configuration cleanup failed.');
+        }
+    }
+    if ($syntheticRecoveryConfigDirectory !== null && is_dir($syntheticRecoveryConfigDirectory)
+        && !rmdir($syntheticRecoveryConfigDirectory)) {
+        $failure ??= new RuntimeException('Synthetic recovery configuration directory cleanup failed.');
     }
 }
 

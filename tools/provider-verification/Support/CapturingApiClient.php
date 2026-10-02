@@ -122,7 +122,7 @@ final class CapturingApiClient implements ApiClientInterface
         $finalUrl = (string)curl_getinfo($curl, CURLINFO_EFFECTIVE_URL);
         $transportOk = $executionResult !== false;
         $requestHeaderNames = $this->headerNamesFromBlock($requestHeaderBlock);
-        curl_close($curl);
+        unset($curl);
 
         $sequence = $this->captureSession->captureExchange([
             'stage' => $this->stage,
@@ -202,7 +202,7 @@ final class CapturingApiClient implements ApiClientInterface
     }
 
     /**
-     * Applies the shared cURL request configuration and closes the handle on configuration failure.
+     * Applies the shared cURL request configuration; handle cleanup follows PHP object lifetime.
      *
      * @param resource|\CurlHandle $curl
      * @param list<string> $headerLines
@@ -262,7 +262,6 @@ final class CapturingApiClient implements ApiClientInterface
                 throw new RuntimeException('Could not configure the provider verification POST body.');
             }
         } catch (Throwable $exception) {
-            curl_close($curl);
             if ($exception instanceof RuntimeException) {
                 throw $exception;
             }

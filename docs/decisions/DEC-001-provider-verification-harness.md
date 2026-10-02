@@ -41,3 +41,7 @@ Maintained scripts keep the exact exercised package path reviewable and reusable
 - Before raw evidence cleanup, the harness persists the fully validated sanitized report outside the repository and verifies its read-back, JSON validity, byte count, and SHA-256. A successful sanitized artifact remains available for handoff and review.
 - Capture failures before a safe sanitized artifact is verified retain raw evidence only in a private operating-system temporary directory for local diagnosis. If raw cleanup fails after artifact verification, the sanitized artifact and remaining raw evidence are retained and the diagnostic identifies the artifact, raw directory, and failing stage.
 - Provider calls, runtime remediation, and fixture promotion remain separate reviewable steps.
+- Failures after capture persist a sanitized durable diagnostic artifact, verify its read-back, byte count, and SHA-256, then hand off a concise stdout summary.
+- Retained raw evidence from a failed provider run can be converted into a sanitized report by maintained offline recovery; recovery does not execute provider requests.
+- Recovery leaves the source raw run unchanged and retained until Lead acceptance determines its disposition.
+- Verification diagnostics must not expose stack-trace arguments that may contain secrets.

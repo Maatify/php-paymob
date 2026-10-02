@@ -36,6 +36,16 @@ php tools/provider-verification/wallet.php
 
 Raw request and response bytes are written to a private run directory under the operating-system temporary directory, guarded to remain outside the repository. Files and directories use owner-only permissions. A fully validated sanitized report is persisted under the separate `maatify-paymob-provider-verification/sanitized/` directory with `0700` directory and `0600` file permissions. The harness verifies the saved report's byte count, SHA-256, read-back, and JSON validity before deleting raw evidence. Successful sanitized artifacts remain available for handoff and review; stdout contains a concise summary with the artifact path and hash. If verification fails before a safe artifact is ready, raw evidence is retained outside Git for local diagnosis. If raw cleanup fails after artifact verification, both the sanitized artifact and remaining raw evidence are retained and the diagnostic identifies their paths and the failing stage.
 
+Failures after capture first persist a sanitized failure diagnostic in that same private artifact directory, then print a concise handoff with its path, byte count, and SHA-256. Engine exception trace arguments are disabled before package loading, and deprecation diagnostics use a short argument-free STDERR handler. Failure artifacts retain captured attempt metadata and raw file hashes, never raw request or response bodies.
+
+An existing retained run can be converted into a sanitized report without a provider request:
+
+```sh
+php tools/provider-verification/recover.php <absolute-run-directory> wallet
+```
+
+Recovery currently accepts only the `wallet` scenario and is network-free. It reads a source run in place, writes a sanitized recovery artifact, and does not delete or modify the retained raw run. Runtime-only metadata absent from raw files is reported as unavailable rather than inferred.
+
 Reports preserve response field names, JSON shape, scalar types, nulls, and provider-semantic values. Known secrets, private PII, and account-specific identifiers are replaced with type-compatible placeholders; repeated IDs and references use stable mappings within a capture session. A leak guard fails closed if configured or detected sensitive values remain. Do not copy raw evidence into the repository, a fixture, a log, or a review comment.
 
 Run the network-free sanitizer check with:

@@ -37,6 +37,8 @@ final class VerificationContext
     {
         $stage = 'preflight';
         $context = null;
+        $captureSession = null;
+        $config = null;
         try {
             $config = VerificationConfig::load($repositoryRoot, $scenario, $paymentMethod);
             $captureSession = new CaptureSession($config->repositoryRoot);
@@ -93,26 +95,53 @@ final class VerificationContext
                 $stage = $context->stage;
             }
 
-            if ($captureSession ?? null) {
-                $diagnostic = $captureSession->failureDiagnostic(
-                    $stage,
-                    $exception,
-                    $config->configuredSecrets() ?? [],
-                );
-            } else {
-                $diagnostic = [
-                    'result' => 'FAIL',
-                    'failing_stage' => $stage,
-                    'exception_class' => get_class($exception),
-                    'exception_message' => 'Provider verification preflight did not produce a private capture session.',
-                    'raw_evidence_retained' => false,
-                    'raw_storage_directory' => null,
-                    'raw_artifacts' => [],
-                    'captured_attempts' => [],
-                ];
+            $safeStage = self::safeStage($stage);
+            $exceptionClass = get_class($exception);
+            if ($captureSession instanceof CaptureSession) {
+                try {
+                    $secrets = $config instanceof VerificationConfig ? $config->configuredSecrets() : [];
+                    $diagnostic = $captureSession->failureDiagnostic($safeStage, $exception, $secrets);
+                    $sanitizer = new SemanticSanitizer($secrets);
+                    if ($sanitizer->containsSensitiveValues($diagnostic)) {
+                        throw new \RuntimeException('Failure diagnostic did not pass the leak guard.');
+                    }
+
+                    $fileName = basename($captureSession->rawDirectory()) . '-failure-diagnostic.json';
+                    $artifact = CaptureSession::persistJsonArtifact($diagnostic, $fileName);
+                    $readBack = file_get_contents($artifact['path']);
+                    if (!is_string($readBack) || strlen($readBack) !== $artifact['bytes']
+                        || !hash_equals($artifact['sha256'], hash('sha256', $readBack))) {
+                        throw new \RuntimeException('Failure diagnostic read-back verification failed.');
+                    }
+                    $persistedDiagnostic = json_decode($readBack, true, 512, JSON_THROW_ON_ERROR);
+                    if (!is_array($persistedDiagnostic) || $sanitizer->containsSensitiveValues($persistedDiagnostic)) {
+                        throw new \RuntimeException('Persisted failure diagnostic did not pass verification.');
+                    }
+
+                    $summary = [
+                        'result' => 'FAIL',
+                        'failing_stage' => $safeStage,
+                        'exception_class' => $exceptionClass,
+                        'exception_message' => $diagnostic['exception_message'],
+                        'failure_artifact_path' => $artifact['path'],
+                        'failure_artifact_bytes' => $artifact['bytes'],
+                        'failure_artifact_sha256' => $artifact['sha256'],
+                        'raw_evidence_retained' => true,
+                        'raw_storage_directory' => $captureSession->rawDirectory(),
+                        'captured_attempt_count' => count($diagnostic['captured_attempts']),
+                    ];
+                    if ($sanitizer->containsSensitiveValues($summary)) {
+                        throw new \RuntimeException('Failure handoff summary did not pass the leak guard.');
+                    }
+                    fwrite(STDOUT, json_encode($summary, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . PHP_EOL);
+                    return 1;
+                } catch (Throwable) {
+                    self::emitPersistenceFailure($safeStage, $exceptionClass, $captureSession->rawDirectory());
+                    return 1;
+                }
             }
 
-            self::emit($diagnostic);
+            self::emitPersistenceFailure($safeStage, $exceptionClass, null, false);
             return 1;
         }
     }
@@ -299,8 +328,26 @@ final class VerificationContext
         }
     }
 
-    private static function emit(array $report): void
+    private static function emitPersistenceFailure(
+        string $stage,
+        string $exceptionClass,
+        ?string $rawDirectory,
+        bool $persistenceFailed = true,
+    ): void {
+        $report = [
+            'result' => 'FAIL',
+            'diagnostic' => $persistenceFailed
+                ? 'PROVIDER VERIFICATION FAILURE DIAGNOSTIC COULD NOT BE PERSISTED'
+                : 'PROVIDER VERIFICATION FAILED BEFORE CAPTURE SESSION CREATION',
+            'failing_stage' => self::safeStage($stage),
+            'exception_class' => $exceptionClass,
+            'raw_storage_directory' => $rawDirectory,
+        ];
+        fwrite(STDOUT, json_encode($report, JSON_UNESCAPED_SLASHES | JSON_PARTIAL_OUTPUT_ON_ERROR) . PHP_EOL);
+    }
+
+    private static function safeStage(string $stage): string
     {
-        echo json_encode($report, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . PHP_EOL;
+        return preg_match('/^[A-Za-z0-9-]{1,80}$/', $stage) === 1 ? $stage : 'unknown';
     }
 }
