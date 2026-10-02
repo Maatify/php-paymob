@@ -203,7 +203,7 @@ final class CapturingApiClient implements ApiClientInterface
         $parts = parse_url($url);
         if (!is_array($parts) || ($parts['scheme'] ?? null) !== 'https'
             || ($parts['host'] ?? null) !== 'accept.paymob.com') {
-            throw new RuntimeException('Provider verification URL failed its HTTPS sandbox host guard.');
+            throw new RuntimeException('Provider verification URL failed its Paymob Egypt API HTTPS host guard.');
         }
 
         return $url;

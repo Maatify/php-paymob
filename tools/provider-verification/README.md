@@ -1,8 +1,8 @@
 # Paymob provider verification
 
-This maintained CLI tooling verifies explicitly selected Paymob provider flows through the package's current services and request DTOs. The verification transport captures request and response evidence outside the repository and emits a sanitized report and response fixture candidate.
+This maintained CLI tooling verifies explicitly selected Paymob provider flows through the package's current services and request DTOs. The verification transport captures request and response evidence outside the repository and saves a sanitized report and response fixture candidate.
 
-This tooling is separate from the Unit Test suite: it makes real HTTP requests to the Paymob sandbox and exercises provider behavior. It is also separate from the Consumer Verification Harness, which validates a package consumer's integration with a published package. These scripts use the current repository source.
+This tooling is separate from the Unit Test suite: it makes real HTTP requests to the Paymob Egypt API and exercises provider behavior. Test and Live modes use the same API base URL; credentials and integration IDs determine the configured mode. It is also separate from the Consumer Verification Harness, which validates a package consumer's integration with a published package. These scripts use the current repository source.
 
 ## Before running a provider flow
 
@@ -11,10 +11,11 @@ Execution is manual and explicit. Each flow can create provider-side orders or t
 Requirements:
 
 - PHP 8.2 or later, Composer dependencies installed, and the cURL extension.
-- A repository-local `.env` with `PAYMOB_API_KEY`, `PAYMOB_BASE_URL`, and `PAYMOB_HMAC_SECRET`.
+- A repository-local `.env` with `PAYMOB_API_KEY` and `PAYMOB_BASE_URL`.
 - `PAYMOB_BASE_URL` normalizes to `https://accept.paymob.com/api`.
+- `PAYMOB_HMAC_SECRET` is optional for Auth, Order, Payment Key, Kiosk, and Wallet verification. Webhook/HMAC verification requirements will be set when those contracts are in scope.
 - The selected payment flow's integration ID: `PAYMOB_INTEGRATION_ID_CARD`, `PAYMOB_INTEGRATION_ID_KIOSK`, or `PAYMOB_INTEGRATION_ID_WALLET`.
-- Wallet flow only: `PAYMOB_TEST_WALLET_MSISDN=01010101010`, the approved public sandbox test input.
+- Wallet flow only: `PAYMOB_TEST_WALLET_MSISDN=01010101010`, the approved public test input.
 - Optional: `PAYMOB_KEYS_EXPIRY`, consumed by the current package's local token-expiry calculation.
 
 Run one flow at a time from the repository root:
@@ -33,7 +34,7 @@ php tools/provider-verification/wallet.php
 
 ## Evidence and security
 
-Raw request and response bytes are written to a private run directory under the operating-system temporary directory, guarded to remain outside the repository. Files and directories use owner-only permissions. On a fully successful capture, decoding, sanitization, and leak-guard validation, raw evidence is removed. On a transport, decoding, mapping, or sanitization failure, raw evidence is retained outside Git for local diagnosis; output contains only a local path, byte counts, SHA-256 values, stage, and sanitized exception details. Inspect or remove retained evidence locally after diagnosis.
+Raw request and response bytes are written to a private run directory under the operating-system temporary directory, guarded to remain outside the repository. Files and directories use owner-only permissions. A fully validated sanitized report is persisted under the separate `maatify-paymob-provider-verification/sanitized/` directory with `0700` directory and `0600` file permissions. The harness verifies the saved report's byte count, SHA-256, read-back, and JSON validity before deleting raw evidence. Successful sanitized artifacts remain available for handoff and review; stdout contains a concise summary with the artifact path and hash. If verification fails before a safe artifact is ready, raw evidence is retained outside Git for local diagnosis. If raw cleanup fails after artifact verification, both the sanitized artifact and remaining raw evidence are retained and the diagnostic identifies their paths and the failing stage.
 
 Reports preserve response field names, JSON shape, scalar types, nulls, and provider-semantic values. Known secrets, private PII, and account-specific identifiers are replaced with type-compatible placeholders; repeated IDs and references use stable mappings within a capture session. A leak guard fails closed if configured or detected sensitive values remain. Do not copy raw evidence into the repository, a fixture, a log, or a review comment.
 

@@ -43,16 +43,50 @@ final class VerificationContext
             $apiClient = new CapturingApiClient($config->baseUrl, $captureSession);
             $context = new self($config, $captureSession, $apiClient, new InMemoryTokenRepository());
             $report = $context->execute();
+            $context->stage = 'sanitize-report';
             $sanitizer = new SemanticSanitizer($config->configuredSecrets(), $config->walletTestMsisdn);
             $report['capture'] = $captureSession->buildSanitizedReport($sanitizer);
             $context->assertSafeOutput($report, $sanitizer);
 
+            $context->stage = 'artifact-persistence';
+            $artifact = $captureSession->persistSanitizedArtifact($report);
+            $context->stage = 'artifact-verification';
+            try {
+                $persistedReport = $captureSession->readSanitizedArtifact();
+                $context->assertSafeOutput($persistedReport, $sanitizer);
+            } catch (Throwable $exception) {
+                $captureSession->discardSanitizedArtifact();
+                throw $exception;
+            }
+            $captureSession->markSanitizedArtifactSafe();
+
+            $summary = [
+                'result' => $report['result'],
+                'scenario' => $report['scenario'],
+                'sanitized_artifact_path' => $artifact['path'],
+                'sanitized_artifact_bytes' => $artifact['bytes'],
+                'sanitized_artifact_sha256' => $artifact['sha256'],
+                'raw_evidence_cleaned' => true,
+                'exchange_count' => count($report['capture']['exchanges']),
+                'stages' => array_values(array_map(
+                    static fn(array $exchange): string => $exchange['stage'],
+                    $report['capture']['exchanges'],
+                )),
+                'http_statuses' => array_values(array_map(
+                    static fn(array $exchange): int => $exchange['http_status'],
+                    $report['capture']['exchanges'],
+                )),
+                'service_results' => $report['service_results'],
+            ];
+            $context->assertSafeOutput($summary, $sanitizer);
+            $successOutput = json_encode($summary, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+
+            $context->stage = 'raw-evidence-cleanup';
             if (!$captureSession->cleanupRawEvidence()) {
-                throw new \RuntimeException('Sanitized capture succeeded but private raw evidence cleanup failed.');
+                throw new \RuntimeException('Verified sanitized artifact exists, but private raw evidence cleanup failed.');
             }
 
-            $report['raw_evidence'] = 'cleaned after sanitized report validation';
-            self::emit($report);
+            echo $successOutput . PHP_EOL;
             return 0;
         } catch (Throwable $exception) {
             if ($context !== null) {
@@ -220,7 +254,7 @@ final class VerificationContext
             firstName: 'Provider',
             lastName: 'Verification',
             email: 'provider-verification@example.test',
-            phoneNumber: '+20000000000',
+            phoneNumber: '+201010101010',
             country: 'NA',
             city: 'Test City',
             street: 'Synthetic Test Street',

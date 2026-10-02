@@ -16,6 +16,15 @@ final class CaptureSession
 
     private string $rawDirectory;
 
+    private string $namespaceDirectory;
+
+    private string $runIdentity;
+
+    /** @var array{path: string, bytes: int, sha256: string}|null */
+    private ?array $sanitizedArtifact = null;
+
+    private bool $sanitizedArtifactSafe = false;
+
     public function __construct(string $repositoryRoot)
     {
         $root = realpath($repositoryRoot);
@@ -41,6 +50,7 @@ final class CaptureSession
         }
 
         $runName = 'run-' . gmdate('Ymd\THis\Z') . '-' . bin2hex(random_bytes(10));
+        $this->namespaceDirectory = $namespaceRealPath;
         $runDirectory = $namespaceRealPath . DIRECTORY_SEPARATOR . $runName;
         if (!mkdir($runDirectory, 0700)) {
             throw new RuntimeException('Could not create a provider-evidence run directory.');
@@ -55,6 +65,7 @@ final class CaptureSession
         }
 
         $this->rawDirectory = $runRealPath;
+        $this->runIdentity = $runName;
     }
 
     /** Persist raw bytes before response decoding or service-level error handling. */
@@ -96,6 +107,163 @@ final class CaptureSession
     public function rawDirectory(): string
     {
         return $this->rawDirectory;
+    }
+
+    /**
+     * Persist a complete sanitized report atomically and verify its bytes, hash, and JSON.
+     *
+     * @param array<string, mixed> $report
+     * @return array{path: string, bytes: int, sha256: string}
+     */
+    public function persistSanitizedArtifact(array $report): array
+    {
+        if ($this->sanitizedArtifact !== null) {
+            throw new RuntimeException('A sanitized report artifact already exists for this run.');
+        }
+
+        $directory = $this->sanitizedDirectory();
+        $artifactPath = $directory . DIRECTORY_SEPARATOR . $this->runIdentity . '-sanitized-report.json';
+        if (file_exists($artifactPath) || is_link($artifactPath)) {
+            throw new RuntimeException('The unique sanitized report artifact path already exists.');
+        }
+
+        $bytes = json_encode($report, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+        $expectedBytes = strlen($bytes);
+        $expectedHash = hash('sha256', $bytes);
+        $temporaryPath = $directory . DIRECTORY_SEPARATOR . '.' . $this->runIdentity . '-' . bin2hex(random_bytes(8)) . '.tmp';
+        $file = @fopen($temporaryPath, 'xb');
+        if ($file === false) {
+            throw new RuntimeException('Could not create a private sanitized report artifact.');
+        }
+
+        $published = false;
+        try {
+            chmod($temporaryPath, 0600);
+            clearstatcache(true, $temporaryPath);
+            if ((fileperms($temporaryPath) & 0777) !== 0600) {
+                throw new RuntimeException('Sanitized report artifact permissions do not meet the private-mode requirement.');
+            }
+
+            $written = 0;
+            while ($written < $expectedBytes) {
+                $count = fwrite($file, substr($bytes, $written));
+                if ($count === false || $count === 0) {
+                    throw new RuntimeException('Sanitized report artifact write was incomplete.');
+                }
+                $written += $count;
+            }
+            if (!fflush($file) || (function_exists('fsync') && !fsync($file))) {
+                throw new RuntimeException('Sanitized report artifact could not be flushed to storage.');
+            }
+            if (!fclose($file)) {
+                $file = null;
+                throw new RuntimeException('Sanitized report artifact could not be closed.');
+            }
+            $file = null;
+
+            $temporaryReadBack = $this->readVerified($temporaryPath, $expectedBytes, $expectedHash);
+            $decoded = json_decode($temporaryReadBack, true, 512, JSON_THROW_ON_ERROR);
+            if (!is_array($decoded)) {
+                throw new RuntimeException('Sanitized report artifact JSON must contain an object or array.');
+            }
+            if (file_exists($artifactPath) || !rename($temporaryPath, $artifactPath)) {
+                throw new RuntimeException('Could not atomically publish the sanitized report artifact.');
+            }
+            $published = true;
+
+            clearstatcache(true, $artifactPath);
+            $artifactRealPath = realpath($artifactPath);
+            if ($artifactRealPath === false || is_link($artifactPath)
+                || !$this->isWithin($artifactRealPath, $directory)
+                || (fileperms($artifactRealPath) & 0777) !== 0600) {
+                throw new RuntimeException('Sanitized report artifact failed its location or permission guard.');
+            }
+
+            $finalReadBack = $this->readVerified($artifactRealPath, $expectedBytes, $expectedHash);
+            $finalDecoded = json_decode($finalReadBack, true, 512, JSON_THROW_ON_ERROR);
+            if (!is_array($finalDecoded)) {
+                throw new RuntimeException('Persisted sanitized report artifact JSON is not an object or array.');
+            }
+
+            $this->sanitizedArtifact = [
+                'path' => $artifactRealPath,
+                'bytes' => $expectedBytes,
+                'sha256' => $expectedHash,
+            ];
+
+            return $this->sanitizedArtifact;
+        } catch (Throwable $exception) {
+            if (is_resource($file)) {
+                fclose($file);
+            }
+            if (is_file($temporaryPath)) {
+                @unlink($temporaryPath);
+            }
+            if ($published && is_file($artifactPath)) {
+                @unlink($artifactPath);
+            }
+
+            throw new RuntimeException('Sanitized report artifact persistence or verification failed.', 0, $exception);
+        }
+    }
+
+    /**
+     * Re-read a persisted artifact and repeat byte, hash, permission, and JSON checks.
+     *
+     * @return array<string, mixed>
+     */
+    public function readSanitizedArtifact(): array
+    {
+        if ($this->sanitizedArtifact === null) {
+            throw new RuntimeException('No persisted sanitized report artifact is available.');
+        }
+
+        $path = $this->sanitizedArtifact['path'];
+        clearstatcache(true, dirname($path));
+        clearstatcache(true, $path);
+        $directory = realpath(dirname($path));
+        $expectedDirectory = $this->sanitizedDirectory();
+        $pathRealPath = realpath($path);
+        if ($directory === false || $directory !== $expectedDirectory
+            || $pathRealPath === false || !$this->isWithin($pathRealPath, $expectedDirectory)
+            || is_link($path) || !is_file($path)
+            || (fileperms($directory) & 0777) !== 0700
+            || (fileperms($path) & 0777) !== 0600) {
+            throw new RuntimeException('Persisted sanitized report artifact failed its file or permission check.');
+        }
+
+        $bytes = $this->readVerified($path, $this->sanitizedArtifact['bytes'], $this->sanitizedArtifact['sha256']);
+        $report = json_decode($bytes, true, 512, JSON_THROW_ON_ERROR);
+        if (!is_array($report)) {
+            throw new RuntimeException('Persisted sanitized report artifact JSON is not an object or array.');
+        }
+
+        return $report;
+    }
+
+    /** Mark an artifact safe for handoff after its persisted report passes the full leak guard. */
+    public function markSanitizedArtifactSafe(): void
+    {
+        if ($this->sanitizedArtifact === null) {
+            throw new RuntimeException('Cannot validate a sanitized report artifact that was not persisted.');
+        }
+
+        $this->sanitizedArtifactSafe = true;
+    }
+
+    /** Remove a persisted artifact that failed the post-persistence safe-report check. */
+    public function discardSanitizedArtifact(): void
+    {
+        if ($this->sanitizedArtifact !== null) {
+            $path = $this->sanitizedArtifact['path'];
+            if ((is_file($path) || is_link($path)) && !unlink($path)) {
+                $this->sanitizedArtifactSafe = false;
+                throw new RuntimeException('An unvalidated sanitized report artifact could not be removed.');
+            }
+        }
+
+        $this->sanitizedArtifact = null;
+        $this->sanitizedArtifactSafe = false;
     }
 
     /**
@@ -181,6 +349,7 @@ final class CaptureSession
                 'final_url' => $sanitizer->sanitizeUrl((string)$exchange['final_url_raw'], '$.final_url'),
                 'request_header_names' => $exchange['request_header_names'],
                 'request_json_valid' => $exchange['request_json_valid'],
+                'sanitized_request' => $safeRequest,
                 'request_body_structure' => $exchange['request_body_structure'],
                 'request_query_structure' => $exchange['request_query_structure'],
                 'request_body_bytes' => $exchange['request_body_bytes'],
@@ -239,7 +408,7 @@ final class CaptureSession
         }
         $sanitizer->prime($prime);
 
-        return [
+        $diagnostic = [
             'result' => 'FAIL',
             'failing_stage' => $stage,
             'exception_class' => get_class($exception),
@@ -249,6 +418,11 @@ final class CaptureSession
             'raw_artifacts' => $this->rawArtifactSummary(),
             'captured_attempts' => $this->safeAttemptSummary($sanitizer),
         ];
+        if ($this->sanitizedArtifactSafe && $this->sanitizedArtifact !== null) {
+            $diagnostic['sanitized_artifact'] = $this->sanitizedArtifact;
+        }
+
+        return $diagnostic;
     }
 
     /** @return list<array{path: string, bytes: int, sha256: string}> */
@@ -342,18 +516,39 @@ final class CaptureSession
         return $path;
     }
 
+    private function sanitizedDirectory(): string
+    {
+        $directory = $this->namespaceDirectory . DIRECTORY_SEPARATOR . 'sanitized';
+        if (is_link($directory)) {
+            throw new RuntimeException('The sanitized artifact directory cannot be a symbolic link.');
+        }
+        if (!is_dir($directory) && !mkdir($directory, 0700) && !is_dir($directory)) {
+            throw new RuntimeException('Could not create the private sanitized artifact directory.');
+        }
+
+        chmod($directory, 0700);
+        clearstatcache(true, $directory);
+        $realPath = realpath($directory);
+        if ($realPath === false || !$this->isWithin($realPath, $this->namespaceDirectory)
+            || (fileperms($realPath) & 0777) !== 0700) {
+            throw new RuntimeException('The sanitized artifact directory failed its location or permission guard.');
+        }
+
+        return $realPath;
+    }
+
     private function readVerified(string $path, ?int $expectedBytes, ?string $expectedHash): string
     {
         $contents = file_get_contents($path);
         if (!is_string($contents)) {
-            throw new RuntimeException('A raw evidence file could not be read.');
+            throw new RuntimeException('A private evidence file could not be read.');
         }
 
         if ($expectedBytes !== null && strlen($contents) !== $expectedBytes) {
-            throw new RuntimeException('A raw evidence file byte count changed after capture.');
+            throw new RuntimeException('A private evidence file byte count changed after capture.');
         }
         if ($expectedHash !== null && !hash_equals($expectedHash, hash('sha256', $contents))) {
-            throw new RuntimeException('A raw evidence file SHA-256 changed after capture.');
+            throw new RuntimeException('A private evidence file SHA-256 changed after capture.');
         }
 
         return $contents;

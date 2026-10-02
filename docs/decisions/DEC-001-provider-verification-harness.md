@@ -38,5 +38,6 @@ Maintained scripts keep the exact exercised package path reviewable and reusable
 
 - New provider-flow verification belongs in `tools/provider-verification/` unless this decision is formally superseded.
 - The harness remains outside automatic CI execution; an operator selects and runs a flow deliberately.
-- Capture failures retain raw evidence only in a private operating-system temporary directory for local diagnosis. Successful capture removes raw evidence only after sanitization and leak checks pass.
+- Before raw evidence cleanup, the harness persists the fully validated sanitized report outside the repository and verifies its read-back, JSON validity, byte count, and SHA-256. A successful sanitized artifact remains available for handoff and review.
+- Capture failures before a safe sanitized artifact is verified retain raw evidence only in a private operating-system temporary directory for local diagnosis. If raw cleanup fails after artifact verification, the sanitized artifact and remaining raw evidence are retained and the diagnostic identifies the artifact, raw directory, and failing stage.
 - Provider calls, runtime remediation, and fixture promotion remain separate reviewable steps.
