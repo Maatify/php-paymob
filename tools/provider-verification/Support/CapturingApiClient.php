@@ -36,6 +36,38 @@ final class CapturingApiClient implements ApiClientInterface
         $this->stage = $stage;
     }
 
+    /**
+     * Checks request-option setup without executing or capturing a provider request.
+     *
+     * @throws RuntimeException when cURL is unavailable or the handle cannot be configured
+     */
+    public static function selfCheckTransportConfiguration(): void
+    {
+        if (!extension_loaded('curl')) {
+            throw new RuntimeException('The cURL extension is required for provider verification.');
+        }
+
+        $curl = curl_init('https://provider-verification-self-check.invalid/');
+        if ($curl === false) {
+            throw new RuntimeException('Could not initialize the provider verification transport self-check.');
+        }
+
+        $responseBody = '';
+        $responseHeaderNames = [];
+        self::configureTransportHandle(
+            $curl,
+            'POST',
+            ['Content-Type: application/json'],
+            '{}',
+            15,
+            45,
+            $responseBody,
+            $responseHeaderNames,
+        );
+
+        unset($curl);
+    }
+
     /** Send a JSON POST through cURL and capture the raw exchange before decoding. */
     public function post(string $uri, array $body, array $headers = []): array
     {
@@ -71,40 +103,16 @@ final class CapturingApiClient implements ApiClientInterface
         $responseBody = '';
         $responseHeaderNames = [];
         $headerLines = $this->formatHeaders($headers);
-        curl_setopt_array($curl, [
-            CURLOPT_CUSTOMREQUEST => $method,
-            CURLOPT_HTTPHEADER => $headerLines,
-            CURLOPT_RETURNTRANSFER => false,
-            CURLOPT_HEADER => false,
-            CURLOPT_FOLLOWLOCATION => false,
-            CURLOPT_MAXREDIRS => 0,
-            CURLOPT_CONNECTTIMEOUT => $this->connectTimeoutSeconds,
-            CURLOPT_TIMEOUT => $this->timeoutSeconds,
-            CURLOPT_SSL_VERIFYPEER => true,
-            CURLOPT_SSL_VERIFYHOST => 2,
-            CURLOPT_PROTOCOLS => CURLPROTO_HTTPS,
-            CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTPS,
-            CURLOPT_HEADER_OUT => true,
-            CURLOPT_WRITEFUNCTION => static function ($handle, string $chunk) use (&$responseBody): int {
-                $responseBody .= $chunk;
-                return strlen($chunk);
-            },
-            CURLOPT_HEADERFUNCTION => static function ($handle, string $line) use (&$responseHeaderNames): int {
-                if (preg_match('/^HTTP\/\S+\s+\d{3}/i', $line) === 1) {
-                    $responseHeaderNames = [];
-                } elseif (str_contains($line, ':')) {
-                    $name = trim(strstr($line, ':', true));
-                    if ($name !== '') {
-                        $responseHeaderNames[] = $name;
-                    }
-                }
-
-                return strlen($line);
-            },
-        ]);
-        if ($method === 'POST') {
-            curl_setopt($curl, CURLOPT_POSTFIELDS, $requestBody);
-        }
+        self::configureTransportHandle(
+            $curl,
+            $method,
+            $headerLines,
+            $requestBody,
+            $this->connectTimeoutSeconds,
+            $this->timeoutSeconds,
+            $responseBody,
+            $responseHeaderNames,
+        );
 
         $executionResult = curl_exec($curl);
         $curlErrno = curl_errno($curl);
@@ -191,6 +199,76 @@ final class CapturingApiClient implements ApiClientInterface
         }
 
         return $decodedResponse;
+    }
+
+    /**
+     * Applies the shared cURL request configuration and closes the handle on configuration failure.
+     *
+     * @param resource|\CurlHandle $curl
+     * @param list<string> $headerLines
+     * @param list<string> $responseHeaderNames
+     *
+     * @throws RuntimeException when any cURL option cannot be configured
+     */
+    private static function configureTransportHandle(
+        $curl,
+        string $method,
+        array $headerLines,
+        string $requestBody,
+        int $connectTimeoutSeconds,
+        int $timeoutSeconds,
+        string &$responseBody,
+        array &$responseHeaderNames,
+    ): void {
+        try {
+            if (!curl_setopt_array($curl, [
+                CURLOPT_CUSTOMREQUEST => $method,
+                CURLOPT_HTTPHEADER => $headerLines,
+                CURLOPT_RETURNTRANSFER => false,
+                CURLOPT_HEADER => false,
+                CURLOPT_FOLLOWLOCATION => false,
+                CURLOPT_MAXREDIRS => 0,
+                CURLOPT_CONNECTTIMEOUT => $connectTimeoutSeconds,
+                CURLOPT_TIMEOUT => $timeoutSeconds,
+                CURLOPT_SSL_VERIFYPEER => true,
+                CURLOPT_SSL_VERIFYHOST => 2,
+                CURLOPT_PROTOCOLS => CURLPROTO_HTTPS,
+                CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTPS,
+                CURLOPT_WRITEFUNCTION => static function ($handle, string $chunk) use (&$responseBody): int {
+                    $responseBody .= $chunk;
+                    return strlen($chunk);
+                },
+                CURLOPT_HEADERFUNCTION => static function ($handle, string $line) use (&$responseHeaderNames): int {
+                    if (preg_match('/^HTTP\/\S+\s+\d{3}/i', $line) === 1) {
+                        $responseHeaderNames = [];
+                    } elseif (str_contains($line, ':')) {
+                        $name = trim(strstr($line, ':', true));
+                        if ($name !== '') {
+                            $responseHeaderNames[] = $name;
+                        }
+                    }
+
+                    return strlen($line);
+                },
+            ])) {
+                throw new RuntimeException('Could not configure provider verification cURL options.');
+            }
+
+            if (!curl_setopt($curl, CURLINFO_HEADER_OUT, true)) {
+                throw new RuntimeException('Could not enable provider verification request-header capture.');
+            }
+
+            if ($method === 'POST' && !curl_setopt($curl, CURLOPT_POSTFIELDS, $requestBody)) {
+                throw new RuntimeException('Could not configure the provider verification POST body.');
+            }
+        } catch (Throwable $exception) {
+            curl_close($curl);
+            if ($exception instanceof RuntimeException) {
+                throw $exception;
+            }
+
+            throw new RuntimeException('Could not configure provider verification cURL transport.', 0, $exception);
+        }
     }
 
     private function buildUrl(string $uri): string

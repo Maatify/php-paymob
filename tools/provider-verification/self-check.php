@@ -5,6 +5,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/bootstrap.php';
 
 use Maatify\Paymob\ProviderVerification\Support\CaptureSession;
+use Maatify\Paymob\ProviderVerification\Support\CapturingApiClient;
 use Maatify\Paymob\ProviderVerification\Support\SemanticSanitizer;
 use Maatify\Paymob\ProviderVerification\Support\VerificationConfig;
 
@@ -24,6 +25,10 @@ $rawCleaned = false;
 $failure = null;
 
 try {
+    verify(extension_loaded('curl'), 'The cURL extension is not loaded.');
+    CapturingApiClient::selfCheckTransportConfiguration();
+    echo "PASS cURL transport configuration without network execution\n";
+
     $rawJson = <<<'JSON'
 {
   "amount": 15000,
