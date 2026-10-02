@@ -11,7 +11,7 @@ use stdClass;
 final class SemanticSanitizer
 {
     /** @var array<string, true> */
-    private array $sensitiveValues = [];
+    private array $embeddedSensitiveValues = [];
 
     /** @var array<string, true> */
     private array $reservedNumericIds = [];
@@ -39,16 +39,16 @@ final class SemanticSanitizer
     ) {
         foreach ($configuredSecrets as $secret) {
             if ($secret !== '') {
-                $this->sensitiveValues['secret:' . $secret] = true;
+                $this->embeddedSensitiveValues['secret:' . $secret] = true;
             }
         }
     }
 
-    /** Seed secret and ID detection across all exchanges before sanitization starts. */
+    /** Seed global leak-guard literals and ID detection before sanitization; address/name values stay path-scoped. */
     public function prime(array $values): void
     {
-        foreach ($values as $index => $value) {
-            $this->collectSensitiveValues($value, '', '$[' . (string)$index . ']');
+        foreach ($values as $value) {
+            $this->collectGlobalLeakGuardValues($value);
         }
     }
 
@@ -98,10 +98,10 @@ final class SemanticSanitizer
                     return is_float($value) ? 20000000000.0 : 20000000000;
                 }
                 if ($this->isIpKey($key)) {
-                    return is_float($value) ? 0.0 : 0;
+                    return $this->redactedNumber($value);
                 }
 
-                return is_float($value) ? 1.0 : 1;
+                return $this->redactedNumber($value);
             }
 
             return $value;
@@ -293,7 +293,51 @@ final class SemanticSanitizer
         return $differences;
     }
 
-    /** Check serialized sanitized evidence for original secret or PII literals. */
+    /** Return sensitive field paths that still expose their original scalar value. */
+    public function sensitiveFieldDifferences(mixed $raw, mixed $safe, string $key = '', string $path = '$'): array
+    {
+        if (!$this->sameShape($raw, $safe)) {
+            return [$path];
+        }
+
+        return $this->collectSensitiveFieldDifferences($raw, $safe, $key, $path);
+    }
+
+    /** @return list<string> */
+    private function collectSensitiveFieldDifferences(mixed $raw, mixed $safe, string $key, string $path): array
+    {
+        $differences = [];
+        if (($this->isSensitiveKey($key) || $this->isContextualPiiKey($key, $path)
+                || $this->isEmailKey($key) || $this->isPhoneKey($key))
+            && $this->hasSensitiveScalarValue($raw)
+            && !($this->isWalletTestPath($path) && $raw === $this->publicWalletTestMsisdn)
+            && !$this->isExpectedSensitiveScalarReplacement($key, $path, $raw, $safe)) {
+            $differences[] = $path;
+        }
+
+        if ($raw instanceof stdClass && $safe instanceof stdClass) {
+            foreach ($raw as $childKey => $value) {
+                $name = (string)$childKey;
+                $differences = array_merge(
+                    $differences,
+                    $this->collectSensitiveFieldDifferences($value, $safe->{$name}, $name, $path . '.' . $name),
+                );
+            }
+        } elseif (is_array($raw) && is_array($safe)) {
+            foreach ($raw as $childKey => $value) {
+                $name = (string)$childKey;
+                $childPath = array_is_list($raw) ? $path . '[' . $childKey . ']' : $path . '.' . $name;
+                $differences = array_merge(
+                    $differences,
+                    $this->collectSensitiveFieldDifferences($value, $safe[$childKey], $name, $childPath),
+                );
+            }
+        }
+
+        return array_values(array_unique($differences));
+    }
+
+    /** Check serialized sanitized evidence for global secrets and embedded PII or token values. */
     public function containsSensitiveValues(mixed $value): bool
     {
         try {
@@ -302,16 +346,16 @@ final class SemanticSanitizer
             return true;
         }
 
-        foreach ($this->sensitiveLiterals() as $sensitive) {
+        foreach ($this->embeddedSensitiveLiterals() as $sensitive) {
             if ($sensitive !== '' && str_contains($encoded, $sensitive)) {
                 return true;
             }
         }
 
-        return false;
+        return $this->containsEmbeddedPiiOrToken($value);
     }
 
-    /** Remove known secret and PII literals from a safe diagnostic string. */
+    /** Remove global secrets and embedded email or phone values from a safe diagnostic string. */
     public function sanitizeDiagnostic(string $message): string
     {
         return $this->redactEmbeddedSensitiveText($message);
@@ -346,12 +390,12 @@ final class SemanticSanitizer
         return $summary;
     }
 
-    private function collectSensitiveValues(mixed $value, string $key = '', string $path = '$'): void
+    private function collectGlobalLeakGuardValues(mixed $value, string $key = ''): void
     {
         if ($value instanceof stdClass) {
             foreach ($value as $childKey => $childValue) {
                 $name = (string)$childKey;
-                $this->collectSensitiveValues($childValue, $name, $path . '.' . $name);
+                $this->collectGlobalLeakGuardValues($childValue, $name);
             }
 
             return;
@@ -360,16 +404,15 @@ final class SemanticSanitizer
         if (is_array($value)) {
             foreach ($value as $childKey => $childValue) {
                 $name = (string)$childKey;
-                $childPath = array_is_list($value) ? $path . '[' . $childKey . ']' : $path . '.' . $name;
-                $this->collectSensitiveValues($childValue, $name, $childPath);
+                $this->collectGlobalLeakGuardValues($childValue, $name);
             }
 
             return;
         }
 
         if (is_string($value)) {
-            if ($this->isSensitiveKey($key) || $this->isPiiKey($key, $path)) {
-                $this->rememberSensitiveValue($value);
+            if ($this->isSensitiveKey($key)) {
+                $this->rememberEmbeddedSensitiveValue($value);
             }
 
             if (filter_var($value, FILTER_VALIDATE_URL) !== false) {
@@ -378,14 +421,14 @@ final class SemanticSanitizer
 
             if (preg_match_all('/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i', $value, $emails) > 0) {
                 foreach ($emails[0] as $email) {
-                    $this->rememberSensitiveValue($email);
+                    $this->rememberEmbeddedSensitiveValue($email);
                 }
             }
 
             if (preg_match_all('/(?<!\d)(?:\+?20)?01[0-2,5]\d{8}(?!\d)/', $value, $phones) > 0) {
                 foreach ($phones[0] as $phone) {
                     if ($phone !== $this->publicWalletTestMsisdn) {
-                        $this->rememberSensitiveValue($phone);
+                        $this->rememberEmbeddedSensitiveValue($phone);
                     }
                 }
             }
@@ -404,24 +447,24 @@ final class SemanticSanitizer
             }
 
             if ($this->isSensitiveKey($key)) {
-                $this->rememberSensitiveValue((string)$value);
+                $this->rememberEmbeddedSensitiveValue((string)$value);
             }
         }
     }
 
-    private function rememberSensitiveValue(string $value): void
+    private function rememberEmbeddedSensitiveValue(string $value): void
     {
         if ($value !== '' && $value !== $this->publicWalletTestMsisdn) {
-            $this->sensitiveValues['secret:' . $value] = true;
+            $this->embeddedSensitiveValues['secret:' . $value] = true;
         }
     }
 
     /** @return list<string> */
-    private function sensitiveLiterals(): array
+    private function embeddedSensitiveLiterals(): array
     {
         return array_map(
             static fn(string $key): string => substr($key, strlen('secret:')),
-            array_keys($this->sensitiveValues),
+            array_keys($this->embeddedSensitiveValues),
         );
     }
 
@@ -436,14 +479,14 @@ final class SemanticSanitizer
             $bits = explode('=', $pair, 2);
             $name = rawurldecode($bits[0]);
             if (isset($bits[1]) && $this->isSensitiveKey($name)) {
-                $this->rememberSensitiveValue(rawurldecode($bits[1]));
+                $this->rememberEmbeddedSensitiveValue(rawurldecode($bits[1]));
             }
         }
 
         foreach (explode('/', (string)($parts['path'] ?? '')) as $segment) {
             $decoded = rawurldecode($segment);
             if ($this->looksLikeSecretToken($decoded)) {
-                $this->rememberSensitiveValue($decoded);
+                $this->rememberEmbeddedSensitiveValue($decoded);
             }
         }
     }
@@ -489,11 +532,11 @@ final class SemanticSanitizer
         }
 
         if (is_int($value)) {
-            return 1;
+            return $this->redactedNumber($value);
         }
 
         if (is_float($value)) {
-            return 1.0;
+            return $this->redactedNumber($value);
         }
 
         return $value;
@@ -577,7 +620,7 @@ final class SemanticSanitizer
 
     private function redactEmbeddedSensitiveText(string $value): string
     {
-        $secrets = $this->sensitiveLiterals();
+        $secrets = $this->embeddedSensitiveLiterals();
         usort($secrets, static fn(string $a, string $b): int => strlen($b) <=> strlen($a));
         foreach ($secrets as $secret) {
             if ($secret !== '') {
@@ -590,6 +633,121 @@ final class SemanticSanitizer
         $value = preg_replace('/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_.-]{8,}(?:\.[A-Za-z0-9_.-]*)?/', '<REDACTED_TOKEN>', $value) ?? $value;
         $value = preg_replace('/(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{48,}(?![A-Za-z0-9_-])/', '<REDACTED_TOKEN>', $value) ?? $value;
         return $value;
+    }
+
+    private function hasSensitiveScalarValue(mixed $value): bool
+    {
+        return (is_string($value) && $value !== '') || is_int($value) || is_float($value);
+    }
+
+    private function isExpectedSensitiveScalarReplacement(
+        string $key,
+        string $path,
+        string|int|float $raw,
+        mixed $safe,
+    ): bool {
+        if ($this->isSensitiveKey($key)) {
+            $expected = is_string($raw) ? '<REDACTED_SECRET>' : $this->redactedNumber($raw);
+            return $safe === $expected;
+        }
+
+        if (is_string($raw)) {
+            if ($this->isEmailKey($key)) {
+                return $safe === 'customer@example.test';
+            }
+            if ($this->isPhoneKey($key)) {
+                return $safe === '+20000000000';
+            }
+            if ($this->isNameKey($key, $path)) {
+                return $safe === '<SANITIZED_NAME>';
+            }
+            if ($this->isAddressKey($key, $path)) {
+                return $safe === '<SANITIZED_ADDRESS>';
+            }
+            if ($this->isIpKey($key)) {
+                return $safe === '192.0.2.1';
+            }
+        }
+
+        if ($this->isPhoneKey($key)) {
+            $expected = is_float($raw) ? 20000000000.0 : 20000000000;
+            return $safe === $expected;
+        }
+
+        return $safe === $this->redactedNumber($raw);
+    }
+
+    private function isContextualPiiKey(string $key, string $path): bool
+    {
+        return $this->isNameKey($key, $path) || $this->isAddressKey($key, $path) || $this->isIpKey($key);
+    }
+
+    private function redactedNumber(int|float $value): int|float
+    {
+        if (is_float($value)) {
+            return $value === 1.0 ? 2.0 : 1.0;
+        }
+
+        return $value === 1 ? 2 : 1;
+    }
+
+    private function containsEmbeddedPiiOrToken(mixed $value, string $key = '', string $path = '$'): bool
+    {
+        if ($value instanceof stdClass) {
+            foreach ($value as $childKey => $childValue) {
+                $name = (string)$childKey;
+                if ($this->containsEmbeddedPiiOrToken($childValue, $name, $path . '.' . $name)) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        if (is_array($value)) {
+            foreach ($value as $childKey => $childValue) {
+                $name = (string)$childKey;
+                $childPath = array_is_list($value) ? $path . '[' . $childKey . ']' : $path . '.' . $name;
+                if ($this->containsEmbeddedPiiOrToken($childValue, $name, $childPath)) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        if (!is_string($value)) {
+            return false;
+        }
+
+        if (preg_match_all('/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i', $value, $emails) > 0) {
+            foreach ($emails[0] as $email) {
+                if ($email !== 'customer@example.test') {
+                    return true;
+                }
+            }
+        }
+        if (preg_match_all('/(?<!\d)(?:\+?20)?01[0-2,5]\d{8}(?!\d)/', $value, $phones) === false) {
+            return false;
+        }
+        foreach ($phones[0] as $phone) {
+            if (!($this->isWalletTestPath($path) && $phone === $this->publicWalletTestMsisdn)) {
+                return true;
+            }
+        }
+
+        if (!$this->isHashMetadataKey($key)
+            && (preg_match('/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_.-]{8,}(?:\.[A-Za-z0-9_.-]*)?/', $value) === 1
+                || preg_match('/(?<![A-Za-z0-9])[A-Za-z0-9]{48,}(?![A-Za-z0-9])/', $value) === 1)) {
+            return true;
+        }
+
+        return false;
+    }
+
+    private function isHashMetadataKey(string $key): bool
+    {
+        return preg_match('/(^|_)(sha-?256|hash|checksum)(_|$)/i', $key) === 1;
     }
 
     private function isSensitiveKey(string $key): bool

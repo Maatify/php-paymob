@@ -137,6 +137,10 @@ final class RetainedRunRecovery
                 || $sanitizer->semanticDifferences($entry['response_raw'], $safeResponse, '', '$.response') !== []) {
                 throw new RuntimeException('Recovered evidence changed provider-semantic values.');
             }
+            if ($sanitizer->sensitiveFieldDifferences($entry['request_raw'], $safeRequest, '', '$.request') !== []
+                || $sanitizer->sensitiveFieldDifferences($entry['response_raw'], $safeResponse, '', '$.response') !== []) {
+                throw new RuntimeException('Recovered evidence did not redact sensitive fields.');
+            }
 
             $exchange = [
                 'sequence' => $entry['sequence'],

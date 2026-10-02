@@ -120,8 +120,12 @@ try {
 {
   "amount": 15000,
   "amount_cents": 15000,
+  "id": 900001,
   "currency": "EGP",
   "payment_status": "UNPAID",
+  "message": "Transaction Created Successfully",
+  "verification_label": "Provider Verification completed",
+  "digit_context": "release 1 is ready",
   "pending": true,
   "success": false,
   "optional": null,
@@ -140,8 +144,24 @@ try {
     "phone_number": "01012345678",
     "address": "Private Street 12"
   },
+  "billing_data": {
+    "first_name": "Provider",
+    "last_name": "Verification",
+    "building": "1",
+    "floor": "1",
+    "apartment": "1",
+    "postal_code": "00000",
+    "street": "Synthetic Test Street",
+    "city": "Test City",
+    "state": "Test State",
+    "email": "private-person@example.org",
+    "phone_number": "+201234567890"
+  },
   "source": {"identifier": "01010101010", "subtype": "WALLET"},
   "api_key": "configured-api-key-example",
+  "auth_token": "synthetic-auth-token-value",
+  "payment_token": "synthetic-payment-token-value",
+  "authorization": "Bearer synthetic-authorization-credential",
   "hmac_secret": "configured-hmac-secret-example",
   "token": "synthetic-provider-token-placeholder",
   "token_context": {"type": "wallet", "token": "nested-sensitive-token", "message": "Transaction Created Successfully"},
@@ -162,9 +182,13 @@ JSON;
     verify($safe->pending === true && $safe->success === false && $safe->optional === null, 'Boolean or null values changed.');
     verify($safe->details->values[1] === 1.5 && is_float($safe->details->values[1]), 'Float value was not preserved.');
     verify($safe->payment_status === 'UNPAID', 'payment_status semantic value changed.');
+    verify($safe->created_at === '2026-10-02T12:00:00.000000Z', 'Timestamp value changed.');
     verify($safe->source_data->type === 'wallet' && $safe->source_data->sub_type === 'WALLET', 'Wallet source semantics changed.');
     verify($safe->data->message === 'Transaction Created Successfully', 'Provider message semantic value changed.');
-    verify($safe->created_at === '2026-10-02T12:00:00.000000Z', 'Timestamp value changed.');
+    verify($safe->message === 'Transaction Created Successfully', 'Top-level provider message semantic value changed.');
+    verify($safe->verification_label === 'Provider Verification completed', 'Non-PII Provider/Verification text changed.');
+    verify($safe->digit_context === 'release 1 is ready', 'Unrelated string containing digit 1 changed.');
+    verify($safe->id !== 900001 && is_int($safe->id), 'Numeric ID containing digit 1 was not mapped normally.');
     echo "PASS scalar types and nested containers\n";
     echo "PASS semantic preservation\n";
 
@@ -172,16 +196,84 @@ JSON;
     verify($safe->customer->phone_number === '+20000000000', 'Private phone was not replaced.');
     verify($safe->customer->first_name === '<SANITIZED_NAME>', 'Customer name was not replaced.');
     verify($safe->customer->address === '<SANITIZED_ADDRESS>', 'Customer address was not replaced.');
+    verify($safe->billing_data->first_name === '<SANITIZED_NAME>', 'Billing first_name was not redacted.');
+    verify($safe->billing_data->last_name === '<SANITIZED_NAME>', 'Billing last_name was not redacted.');
+    verify($safe->billing_data->building !== '1', 'Billing building value 1 was not redacted.');
+    verify($safe->billing_data->floor !== '1', 'Billing floor value 1 was not redacted.');
+    verify($safe->billing_data->apartment !== '1', 'Billing apartment value 1 was not redacted.');
+    verify($safe->billing_data->postal_code === '<SANITIZED_ADDRESS>', 'Billing postal_code was not redacted.');
+    verify($safe->billing_data->street === '<SANITIZED_ADDRESS>', 'Billing street was not redacted.');
+    verify($safe->billing_data->city === '<SANITIZED_ADDRESS>', 'Billing city was not redacted.');
+    verify($safe->billing_data->state === '<SANITIZED_ADDRESS>', 'Billing state was not redacted.');
+    verify($safe->billing_data->email === 'customer@example.test', 'Billing email was not redacted.');
+    verify($safe->billing_data->phone_number === '+20000000000', 'Billing phone was not redacted.');
     verify($safe->source->identifier === '01010101010', 'Public wallet test input did not remain recognizable.');
+    verify(
+        $sanitizer->sensitiveFieldDifferences($raw, $safe) === [],
+        'Explicit sensitive-field validation found unredacted PII or credentials.',
+    );
+    $unsafePii = clone $safe;
+    $unsafePii->billing_data = clone $safe->billing_data;
+    $unsafePii->billing_data->building = '1';
+    verify(
+        $sanitizer->sensitiveFieldDifferences($raw, $unsafePii) === ['$.billing_data.building'],
+        'Sensitive-field validation did not report an unchanged short PII value by path.',
+    );
+    $unsafePii->billing_data->building = '<SANITIZED_ADDRESS>1';
+    verify(
+        $sanitizer->sensitiveFieldDifferences($raw, $unsafePii) === ['$.billing_data.building'],
+        'Sensitive-field validation accepted a noncanonical partial redaction.',
+    );
     echo "PASS PII redaction and public wallet test input handling\n";
 
     verify($safe->token !== $raw->token, 'Provider token was not replaced.');
+    verify($safe->auth_token !== 'synthetic-auth-token-value', 'Auth token was not replaced.');
+    verify($safe->payment_token !== 'synthetic-payment-token-value', 'Payment token was not replaced.');
+    verify($safe->authorization !== 'Bearer synthetic-authorization-credential', 'Authorization credentials were not replaced.');
     verify($safe->token_context->type === 'wallet', 'Nested token metadata semantic type changed.');
     verify($safe->token_context->message === 'Transaction Created Successfully', 'Nested token metadata message changed.');
     verify($safe->token_context->token !== $raw->token_context->token, 'Nested provider token was not replaced.');
     verify($safe->api_key !== 'configured-api-key-example', 'Configured API key literal was not replaced.');
     verify($safe->hmac_secret !== 'configured-hmac-secret-example', 'Configured HMAC secret literal was not replaced.');
     verify(!$sanitizer->containsSensitiveValues($safe), 'A configured secret or detected sensitive value remains.');
+    foreach ([
+        'configured API key' => 'configured-api-key-example',
+        'auth token' => 'synthetic-auth-token-value',
+        'payment token' => 'synthetic-payment-token-value',
+        'HMAC secret' => 'configured-hmac-secret-example',
+        'authorization credential' => 'Bearer synthetic-authorization-credential',
+    ] as $secretName => $secretValue) {
+        verify(
+            $sanitizer->containsSensitiveValues(['unrelated_safe_field' => $secretValue]),
+            ucfirst($secretName) . ' reinsertion was not rejected by the global leak guard.',
+        );
+    }
+    verify(
+        $sanitizer->containsSensitiveValues([
+            'unrelated_safe_field' => 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature-payload-1234567890',
+        ]),
+        'An unseeded embedded JWT-like token was not rejected by the leak guard.',
+    );
+    verify(
+        $sanitizer->containsSensitiveValues(['diagnostic' => 'embedded private-person@example.org value']),
+        'Embedded email leak outside the original field was not rejected.',
+    );
+    verify(
+        $sanitizer->containsSensitiveValues(['diagnostic' => 'embedded 01012345678 value']),
+        'Embedded phone leak outside the original field was not rejected.',
+    );
+    $safeHashMetadata = [
+        'amount_cents' => 15000,
+        'id' => $safe->id,
+        'timestamp' => $safe->created_at,
+        'sha256' => hash('sha256', 'safe deterministic metadata'),
+        'message' => 'Transaction Created Successfully',
+        'note' => 'Provider Verification completed at step 1',
+    ];
+    verify(
+        !$sanitizer->containsSensitiveValues($safeHashMetadata),
+        'Unrelated amount, ID, timestamp, semantic text, or SHA-256 metadata caused a false leak.',
+    );
     $safeJson = json_encode($safe, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
     verify(!str_contains($safeJson, $raw->token), 'Original provider token appears in sanitized JSON.');
     verify(!str_contains($safeJson, $raw->token_context->token), 'Nested provider token appears in sanitized JSON.');
@@ -245,7 +337,19 @@ JSON;
   "currency": "EGP",
   "expiration": 180,
   "integration_id": 876543,
-  "billing_data": {"phone_number": "+201010101010", "email": "person@example.org"}
+  "billing_data": {
+    "first_name": "Provider",
+    "last_name": "Verification",
+    "building": "1",
+    "floor": "1",
+    "apartment": "1",
+    "postal_code": "00000",
+    "street": "Synthetic Test Street",
+    "city": "Test City",
+    "state": "Test State",
+    "phone_number": "+201010101010",
+    "email": "person@example.org"
+  }
 }
 JSON;
     $responseJson = <<<'JSON'
@@ -285,7 +389,19 @@ JSON;
             'currency' => 'string',
             'expiration' => 'int',
             'integration_id' => 'int',
-            'billing_data' => ['phone_number' => 'string', 'email' => 'string'],
+            'billing_data' => [
+                'first_name' => 'string',
+                'last_name' => 'string',
+                'building' => 'string',
+                'floor' => 'string',
+                'apartment' => 'string',
+                'postal_code' => 'string',
+                'street' => 'string',
+                'city' => 'string',
+                'state' => 'string',
+                'phone_number' => 'string',
+                'email' => 'string',
+            ],
         ],
         'request_query_structure' => null,
         'http_status' => 200,
@@ -310,6 +426,12 @@ JSON;
     verify($sanitizedExchange['sanitized_request']->amount_cents === 15000, 'Sanitized request changed amount_cents.');
     verify($sanitizedExchange['sanitized_request']->currency === 'EGP', 'Sanitized request changed currency.');
     verify($sanitizedExchange['sanitized_request']->expiration === 180, 'Sanitized request changed expiration.');
+    verify(
+        $sanitizedExchange['sanitized_request']->billing_data->building !== '1'
+        && $sanitizedExchange['sanitized_request']->billing_data->floor !== '1'
+        && $sanitizedExchange['sanitized_request']->billing_data->apartment !== '1',
+        'CaptureSession did not redact short billing PII values.',
+    );
     verify(
         $sanitizedExchange['sanitized_request']->integration_id === $sanitizedExchange['sanitized_response_fixture_candidate']->integration_id,
         'Sanitized request and response integration IDs do not share a stable mapping.',
@@ -389,10 +511,20 @@ JSON;
         ['configured-api-key-example', 'configured-hmac-secret-example'],
     );
     $failureSanitizer = new SemanticSanitizer(
-        ['configured-api-key-example', 'configured-hmac-secret-example'],
+        [
+            'configured-api-key-example',
+            'configured-hmac-secret-example',
+            'synthetic-request-payment-token',
+            'synthetic-provider-response-token',
+            'synthetic-auth-token-value',
+        ],
         '01010101010',
     );
-    verify(!$failureSanitizer->containsSensitiveValues($failureDiagnostic), 'Synthetic failure diagnostic contains a secret.');
+    $failureSanitizer->prime([$request, $response]);
+    verify(
+        !$failureSanitizer->containsSensitiveValues($failureDiagnostic),
+        'Synthetic failure diagnostic contains a secret.',
+    );
     $failureArtifact = CaptureSession::persistJsonArtifact(
         $failureDiagnostic,
         basename($rawDirectory) . '-failure-diagnostic.json',
@@ -479,6 +611,28 @@ JSON;
     verify(file_put_contents($recoveryConfigPath, $recoveryConfig) === strlen($recoveryConfig), 'Synthetic recovery configuration could not be written.');
     chmod($recoveryConfigPath, 0600);
 
+    $syntheticPaymentKeyRequest = json_encode([
+        'auth_token' => 'recovery-self-check-auth-token',
+        'order_id' => 123456,
+        'integration_id' => 73486,
+        'amount_cents' => 15000,
+        'currency' => 'EGP',
+        'created_at' => '2026-10-03T10:01:00Z',
+        'verification_label' => 'Provider Verification step 1',
+        'billing_data' => [
+            'first_name' => 'Provider',
+            'last_name' => 'Verification',
+            'building' => '1',
+            'floor' => '1',
+            'apartment' => '1',
+            'postal_code' => '00000',
+            'street' => 'Synthetic Test Street',
+            'city' => 'Test City',
+            'state' => 'Test State',
+            'email' => 'private-person@example.org',
+            'phone_number' => '+201234567890',
+        ],
+    ], JSON_THROW_ON_ERROR);
     $syntheticExchanges = [
         [
             'https://accept.paymob.com/api/auth/tokens',
@@ -492,7 +646,7 @@ JSON;
         ],
         [
             'https://accept.paymob.com/api/acceptance/payment_keys',
-            '{"auth_token":"recovery-self-check-auth-token","order_id":123456,"integration_id":73486,"amount_cents":15000,"currency":"EGP"}',
+            $syntheticPaymentKeyRequest,
             '{"token":"recovery-self-check-payment-token","order_id":123456,"integration_id":73486,"currency":"EGP","status":"issued"}',
         ],
         [
@@ -538,6 +692,7 @@ JSON;
         'Recovery report omitted source retention or exchange count.',
     );
     $recoveredWallet = $recoveryReport['exchanges'][3];
+    $recoveredPaymentKey = $recoveryReport['exchanges'][2];
     verify($recoveredWallet['method'] === null, 'Recovery invented an unavailable request method.');
     foreach (['http_status', 'transport_ok', 'curl_errno', 'curl_error', 'request_header_names', 'response_header_names'] as $unavailableField) {
         verify($recoveredWallet[$unavailableField] === null, 'Recovery invented unavailable runtime metadata.');
@@ -549,6 +704,27 @@ JSON;
     verify(
         $recoveredWallet['sanitized_request']['source']['identifier'] === '01010101010',
         'Recovery did not preserve the public wallet test input.',
+    );
+    $recoveredBillingData = $recoveredPaymentKey['sanitized_request']['billing_data'];
+    verify(
+        $recoveredBillingData['first_name'] === '<SANITIZED_NAME>'
+        && $recoveredBillingData['last_name'] === '<SANITIZED_NAME>'
+        && $recoveredBillingData['building'] !== '1'
+        && $recoveredBillingData['floor'] !== '1'
+        && $recoveredBillingData['apartment'] !== '1'
+        && $recoveredBillingData['postal_code'] === '<SANITIZED_ADDRESS>'
+        && $recoveredBillingData['street'] === '<SANITIZED_ADDRESS>'
+        && $recoveredBillingData['city'] === '<SANITIZED_ADDRESS>'
+        && $recoveredBillingData['state'] === '<SANITIZED_ADDRESS>'
+        && $recoveredBillingData['email'] === 'customer@example.test'
+        && $recoveredBillingData['phone_number'] === '+20000000000',
+        'Offline recovery did not redact the complete synthetic payment-key billing PII shape.',
+    );
+    verify(
+        $recoveredPaymentKey['sanitized_request']['amount_cents'] === 15000
+        && $recoveredPaymentKey['sanitized_request']['created_at'] === '2026-10-03T10:01:00Z'
+        && $recoveredPaymentKey['sanitized_request']['verification_label'] === 'Provider Verification step 1',
+        'Offline recovery changed unrelated amount, timestamp, or Provider/Verification context.',
     );
     verify(
         $recoveredWallet['sanitized_response_fixture_candidate']['success'] === false
@@ -608,20 +784,34 @@ JSON;
     echo "PASS network-free retained-run recovery, stage derivation, sanitization, metadata honesty, referential consistency, and retained source\n";
 
     $syntheticRecoveryFailureDirectory = $privateNamespace . DIRECTORY_SEPARATOR . 'run-self-check-failure-' . bin2hex(random_bytes(6));
-    verify(mkdir($syntheticRecoveryFailureDirectory, 0700), 'Synthetic invalid retained run could not be created.');
+    verify(mkdir($syntheticRecoveryFailureDirectory, 0700), 'Synthetic post-prime failure run could not be created.');
     chmod($syntheticRecoveryFailureDirectory, 0700);
-    $incompleteRawPath = $syntheticRecoveryFailureDirectory . DIRECTORY_SEPARATOR . '0001-request-url.txt';
-    $incompleteRawUrl = 'https://accept.paymob.com/api/auth/tokens';
-    verify(file_put_contents($incompleteRawPath, $incompleteRawUrl) === strlen($incompleteRawUrl), 'Synthetic incomplete raw file could not be written.');
-    chmod($incompleteRawPath, 0600);
+    $failureRawExchange = [
+        '0001-request-url.txt' => 'https://accept.paymob.com/api/auth/tokens',
+        '0001-request-body.bin' => '{"api_key":"recovery-self-check-api-secret","billing_data":{"building":"1"},"amount_cents":15000}',
+        '0001-response-body.bin' => '{"message":"recovery-self-check-api-secret","profile":{"id":123456}}',
+    ];
+    foreach ($failureRawExchange as $fileName => $contents) {
+        $path = $syntheticRecoveryFailureDirectory . DIRECTORY_SEPARATOR . $fileName;
+        verify(file_put_contents($path, $contents, LOCK_EX) === strlen($contents), 'Synthetic post-prime failure evidence could not be written.');
+        chmod($path, 0600);
+    }
+    $failureSourceSnapshot = [];
+    foreach ($failureRawExchange as $fileName => $_contents) {
+        $path = $syntheticRecoveryFailureDirectory . DIRECTORY_SEPARATOR . $fileName;
+        $failureSourceSnapshot[$fileName] = [filesize($path), hash_file('sha256', $path), fileperms($path) & 0777];
+    }
     $recoveryFailure = RetainedRunRecovery::recover(
         $syntheticRecoveryConfigDirectory,
         $syntheticRecoveryFailureDirectory,
         'wallet',
     );
-    verify($recoveryFailure['result'] === 'FAIL', 'Incomplete synthetic retained run unexpectedly recovered.');
+    verify($recoveryFailure['result'] === 'FAIL', 'Synthetic post-prime semantic failure unexpectedly recovered.');
     verify($recoveryFailure['source_raw_retained'] === true, 'Failed recovery did not retain its source run.');
-    verify(is_array($recoveryFailure['failure_artifact']), 'Failed recovery did not persist a durable diagnostic artifact.');
+    verify(
+        is_array($recoveryFailure['failure_artifact']) && $recoveryFailure['failure_artifact']['path'] !== '',
+        'Failed recovery after priming short PII did not persist a durable diagnostic artifact.',
+    );
     $recoveryFailureArtifactPath = $recoveryFailure['failure_artifact']['path'];
     $recoveryFailureBytes = file_get_contents($recoveryFailureArtifactPath);
     verify(is_string($recoveryFailureBytes), 'Recovery failure diagnostic could not be read back.');
@@ -630,16 +820,35 @@ JSON;
         && hash_equals($recoveryFailure['failure_artifact']['sha256'], hash('sha256', $recoveryFailureBytes)),
         'Recovery failure diagnostic byte count or SHA-256 does not match.',
     );
+    verify((fileperms(dirname($recoveryFailureArtifactPath)) & 0777) === 0700, 'Recovery failure artifact directory mode is not 0700.');
+    verify((fileperms($recoveryFailureArtifactPath) & 0777) === 0600, 'Recovery failure artifact file mode is not 0600.');
     verify(
         !str_contains($recoveryFailureBytes, 'recovery-self-check-api-secret')
         && !str_contains($recoveryFailureBytes, 'recovery-self-check-hmac-secret'),
         'Recovery failure diagnostic contains a synthetic configured secret.',
     );
-    verify(
-        is_file($incompleteRawPath) && file_get_contents($incompleteRawPath) === $incompleteRawUrl,
-        'Failed recovery modified its incomplete source run.',
+    $recoveryFailureSanitizer = new SemanticSanitizer(
+        ['recovery-self-check-api-secret', 'recovery-self-check-hmac-secret'],
     );
-    echo "PASS failed offline recovery persists a safe diagnostic and retains its incomplete source\n";
+    $recoveryFailureSanitizer->prime([
+        json_decode($failureRawExchange['0001-request-body.bin'], false, 512, JSON_THROW_ON_ERROR),
+        json_decode($failureRawExchange['0001-response-body.bin'], false, 512, JSON_THROW_ON_ERROR),
+    ]);
+    $recoveryFailureReport = json_decode($recoveryFailureBytes, true, 512, JSON_THROW_ON_ERROR);
+    verify(
+        is_array($recoveryFailureReport) && !$recoveryFailureSanitizer->containsSensitiveValues($recoveryFailureReport),
+        'Recovery failure artifact failed JSON or configured-secret leak-guard verification.',
+    );
+    $failureSourceAfter = [];
+    foreach ($failureRawExchange as $fileName => $_contents) {
+        $path = $syntheticRecoveryFailureDirectory . DIRECTORY_SEPARATOR . $fileName;
+        $failureSourceAfter[$fileName] = [filesize($path), hash_file('sha256', $path), fileperms($path) & 0777];
+    }
+    verify(
+        $failureSourceSnapshot === $failureSourceAfter,
+        'Post-prime failed recovery modified its synthetic source run.',
+    );
+    echo "PASS post-prime failure diagnostic persists with short contextual PII and retained raw source\n";
 } catch (Throwable $exception) {
     $failure = $exception;
 } finally {

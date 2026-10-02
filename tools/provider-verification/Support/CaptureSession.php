@@ -350,6 +350,21 @@ final class CaptureSession
                 throw new RuntimeException('Sanitized evidence changed provider-semantic values.');
             }
 
+            $sensitiveFieldDifferences = [];
+            if ($rawRequest !== null) {
+                $sensitiveFieldDifferences = array_merge(
+                    $sensitiveFieldDifferences,
+                    $sanitizer->sensitiveFieldDifferences($rawRequest, $safeRequest, '', '$.request'),
+                );
+            }
+            $sensitiveFieldDifferences = array_merge(
+                $sensitiveFieldDifferences,
+                $sanitizer->sensitiveFieldDifferences($rawResponse, $safeResponse, '', '$.response'),
+            );
+            if ($sensitiveFieldDifferences !== []) {
+                throw new RuntimeException('Sanitized evidence did not redact sensitive fields.');
+            }
+
             $safeEnvelope = [
                 'request_url' => $sanitizer->sanitizeUrl($entry['raw_url'], '$.request_url'),
                 'request' => $safeRequest,
