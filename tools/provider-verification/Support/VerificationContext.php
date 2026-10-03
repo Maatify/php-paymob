@@ -17,6 +17,7 @@ use Maatify\Paymob\Service\AuthService;
 use Maatify\Paymob\Service\KioskPaymentService;
 use Maatify\Paymob\Service\OrderService;
 use Maatify\Paymob\Service\PaymentKeyService;
+use Maatify\Paymob\Service\TransactionService;
 use Maatify\Paymob\Service\WalletPaymentService;
 use Throwable;
 
@@ -26,6 +27,8 @@ final class VerificationContext
     private string $stage = 'preflight';
 
     private ?bool $paymentKeyOrderIdMatchesCreatedOrder = null;
+
+    private ?bool $transactionIdMatchesRequested = null;
 
     private function __construct(
         private readonly VerificationConfig $config,
@@ -108,6 +111,10 @@ final class VerificationContext
                         $diagnostic['service_results']['payment_key']['order_id_matches_created_order'] = false;
                         $diagnostic['failure_classification'] = 'PACKAGE';
                     }
+                    if ($context?->transactionIdMatchesRequested === false) {
+                        $diagnostic['service_results']['transaction_inquiry']['transaction_id_matches_requested'] = false;
+                        $diagnostic['failure_classification'] = 'PACKAGE';
+                    }
                     $sanitizer = new SemanticSanitizer($secrets);
                     if ($sanitizer->containsSensitiveValues($diagnostic)) {
                         throw new \RuntimeException('Failure diagnostic did not pass the leak guard.');
@@ -141,6 +148,10 @@ final class VerificationContext
                         $summary['service_results']['payment_key']['order_id_matches_created_order'] = false;
                         $summary['failure_classification'] = 'PACKAGE';
                     }
+                    if ($context?->transactionIdMatchesRequested === false) {
+                        $summary['service_results']['transaction_inquiry']['transaction_id_matches_requested'] = false;
+                        $summary['failure_classification'] = 'PACKAGE';
+                    }
                     if ($sanitizer->containsSensitiveValues($summary)) {
                         throw new \RuntimeException('Failure handoff summary did not pass the leak guard.');
                     }
@@ -162,10 +173,6 @@ final class VerificationContext
     {
         $configDTO = $this->config->packageConfig();
         $authService = new AuthService($this->apiClient, $configDTO, $this->tokenRepository);
-        $orderService = new OrderService($this->apiClient, $configDTO, $authService);
-        $paymentKeyService = new PaymentKeyService($this->apiClient, $authService);
-        $kioskService = new KioskPaymentService($this->apiClient, $authService);
-        $walletService = new WalletPaymentService($this->apiClient, $authService);
         $results = [];
 
         $this->setStage('auth');
@@ -185,6 +192,37 @@ final class VerificationContext
         if ($this->config->scenario === 'auth') {
             return ['result' => 'PASS', 'scenario' => 'auth', 'service_results' => $results];
         }
+
+        if ($this->config->scenario === 'transaction-inquiry') {
+            $requestedId = $this->config->testTransactionId;
+            if ($requestedId === null) {
+                throw new \LogicException('The Transaction Inquiry input is unavailable.');
+            }
+            $this->setStage('transaction-inquiry');
+            $transactionResponse = (new TransactionService($this->apiClient, $authService))
+                ->getTransaction($requestedId);
+            $this->assertTransactionIdMapping($requestedId, $transactionResponse->id);
+            $results['transaction_inquiry'] = [
+                'service' => TransactionService::class,
+                'dto' => $transactionResponse::class,
+                'produced' => true,
+                'transaction_id_type' => get_debug_type($transactionResponse->id),
+                'order_id_type' => get_debug_type($transactionResponse->orderId),
+                'amount_cents' => $transactionResponse->amountCents,
+                'currency' => $transactionResponse->currency->value,
+                'success' => $transactionResponse->success,
+                'pending' => $transactionResponse->pending,
+                'payment_status' => $transactionResponse->paymentStatus,
+                'transaction_id_matches_requested' => true,
+            ];
+
+            return ['result' => 'PASS', 'scenario' => 'transaction-inquiry', 'service_results' => $results];
+        }
+
+        $orderService = new OrderService($this->apiClient, $configDTO, $authService);
+        $paymentKeyService = new PaymentKeyService($this->apiClient, $authService);
+        $kioskService = new KioskPaymentService($this->apiClient, $authService);
+        $walletService = new WalletPaymentService($this->apiClient, $authService);
 
         $this->setStage('order');
         $orderResponse = $orderService->createOrder($this->syntheticOrderRequest());
@@ -339,6 +377,16 @@ final class VerificationContext
         if (!$this->paymentKeyOrderIdMatchesCreatedOrder) {
             $this->setStage('payment-key-order-mapping');
             throw new \RuntimeException('Payment Key response order ID does not match the created order.');
+        }
+    }
+
+    /** Record the safe match result and stop on a different Transaction ID. */
+    private function assertTransactionIdMapping(int $requestedId, int $responseId): void
+    {
+        $this->transactionIdMatchesRequested = $requestedId === $responseId;
+        if (!$this->transactionIdMatchesRequested) {
+            $this->setStage('transaction-inquiry-id-mapping');
+            throw new \RuntimeException('Transaction response ID does not match the requested ID.');
         }
     }
 

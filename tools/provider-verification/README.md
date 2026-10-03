@@ -16,6 +16,7 @@ Requirements:
 - `PAYMOB_HMAC_SECRET` is optional for Auth, Order, Payment Key, Kiosk, and Wallet verification. Webhook/HMAC verification requirements will be set when those contracts are in scope.
 - The selected payment flow's integration ID: `PAYMOB_INTEGRATION_ID_CARD`, `PAYMOB_INTEGRATION_ID_KIOSK`, or `PAYMOB_INTEGRATION_ID_WALLET`.
 - Wallet flow only: `PAYMOB_TEST_WALLET_MSISDN=01010101010`, the approved public test input.
+- Transaction Inquiry only: `PAYMOB_TEST_TRANSACTION_ID`, a positive existing Transaction ID supplied locally. No integration ID or Wallet MSISDN is needed.
 - Optional: `PAYMOB_KEYS_EXPIRY`, consumed by the current package's local token-expiry calculation.
 
 Run one flow at a time from the repository root:
@@ -28,9 +29,11 @@ php tools/provider-verification/payment-key.php kiosk
 php tools/provider-verification/payment-key.php wallet
 php tools/provider-verification/kiosk.php
 php tools/provider-verification/wallet.php
+php tools/provider-verification/transaction-inquiry.php
 ```
 
 `payment-key.php` requires exactly one explicit method. The other payment flows select their current integration ID from configuration. `wallet.php` initiates the current wallet flow only; it does not submit an OTP or follow a redirect.
+`transaction-inquiry.php` authenticates and reads only the configured Transaction ID with `GET /api/acceptance/transactions/{id}` and Bearer authorization. It creates no order or payment. Run it only after separate Lead authorization for a real provider call.
 
 ## Evidence and security
 
@@ -44,9 +47,10 @@ An existing retained run can be converted into a sanitized report without a prov
 php tools/provider-verification/recover.php <absolute-run-directory> wallet
 php tools/provider-verification/recover.php <absolute-run-directory> kiosk
 php tools/provider-verification/recover.php <absolute-run-directory> payment-key card
+php tools/provider-verification/recover.php <absolute-run-directory> transaction-inquiry
 ```
 
-Offline recovery supports the `wallet` and `kiosk` scenarios and standalone Card Payment Key recovery with an
+Offline recovery supports `wallet`, `kiosk`, Transaction Inquiry, and standalone Card Payment Key recovery with an
 explicit `card` method. It makes no provider request. It reads a source run in place, writes a sanitized recovery
 artifact, and does not delete or modify the retained raw run. Runtime-only metadata absent from raw files is reported
 as unavailable rather than inferred.

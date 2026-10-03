@@ -11,6 +11,12 @@ use Maatify\Paymob\DTO\Order\OrderItemsDTO;
 use Maatify\Paymob\DTO\Order\OrderRequestDTO;
 use Maatify\Paymob\DTO\Payment\BillingDataDTO;
 use Maatify\Paymob\DTO\Payment\PaymentKeyRequestDTO;
+use Maatify\Paymob\DTO\Auth\TokenResponseDTO;
+use Maatify\Paymob\Exception\ApiException;
+use Maatify\Paymob\Http\ApiClientInterface;
+use Maatify\Paymob\Repository\InMemoryTokenRepository;
+use Maatify\Paymob\Service\AuthService;
+use Maatify\Paymob\Service\TransactionService;
 use Maatify\Paymob\Enum\CurrencyEnum;
 use Maatify\Paymob\ProviderVerification\Support\CaptureSession;
 use Maatify\Paymob\ProviderVerification\Support\CapturingApiClient;
@@ -43,6 +49,8 @@ $kioskRecoveryArtifactPaths = [];
 $syntheticKioskRecoveryDirectories = [];
 $cardRecoveryArtifactPaths = [];
 $syntheticCardRecoveryDirectories = [];
+$transactionRecoveryArtifactPaths = [];
+$syntheticTransactionRecoveryDirectories = [];
 $syntheticKioskConfigDirectory = null;
 $syntheticPaymentKeyConfigDirectory = null;
 $legacyRecoveryArtifactPath = null;
@@ -253,7 +261,8 @@ try {
         && !str_contains($selfCheckSource, 'order' . '.php')
         && !str_contains($selfCheckSource, 'kiosk' . '.php')
         && !str_contains($selfCheckSource, 'wallet' . '.php')
-        && !str_contains($selfCheckSource, 'payment-key' . '.php'),
+        && !str_contains($selfCheckSource, 'payment-key' . '.php')
+        && !str_contains($selfCheckSource, 'transaction-inquiry' . '.php'),
         'The self-check source contains a provider execution or network-backed input.',
     );
 
@@ -685,7 +694,7 @@ JSON;
     $configurationDirectory = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'paymob-provider-config-check-' . bin2hex(random_bytes(8));
     verify(mkdir($configurationDirectory, 0700), 'Could not create a private synthetic configuration directory.');
     $configurationPath = $configurationDirectory . DIRECTORY_SEPARATOR . '.env';
-    $configuration = "PAYMOB_API_KEY=self-check-api-key-value\nPAYMOB_BASE_URL=https://accept.paymob.com/api\n";
+    $configuration = "PAYMOB_API_KEY=self-check-api-key-value\nPAYMOB_BASE_URL=https://accept.paymob.com/api\nPAYMOB_TEST_TRANSACTION_ID=42\n";
     verify(file_put_contents($configurationPath, $configuration) === strlen($configuration), 'Could not write a synthetic configuration file.');
     chmod($configurationPath, 0600);
     $optionalHmacConfig = VerificationConfig::load($configurationDirectory, 'auth');
@@ -695,6 +704,158 @@ JSON;
         'Configured secret list included an absent or empty HMAC value.',
     );
     echo "PASS scenario HMAC optionality and configured-secret filtering\n";
+
+    $transactionConfig = VerificationConfig::load($configurationDirectory, 'transaction-inquiry');
+    verify(
+        $transactionConfig->testTransactionId === 42
+        && $transactionConfig->cardIntegrationId === null
+        && $transactionConfig->kioskIntegrationId === null
+        && $transactionConfig->walletIntegrationId === null
+        && $transactionConfig->walletTestMsisdn === null,
+        'Transaction Inquiry configuration required an unrelated integration or Wallet input.',
+    );
+    verify(
+        file_put_contents($configurationPath, str_replace('PAYMOB_TEST_TRANSACTION_ID=42' . "\n", '', $configuration)) !== false,
+        'Could not prepare the synthetic missing Transaction ID case.',
+    );
+    $missingTransactionIdRejected = false;
+    try {
+        VerificationConfig::load($configurationDirectory, 'transaction-inquiry');
+    } catch (RuntimeException $exception) {
+        $missingTransactionIdRejected = true;
+        verify(!str_contains($exception->getMessage(), '42'), 'Transaction ID validation exposed the configured ID.');
+    }
+    verify($missingTransactionIdRejected, 'Transaction Inquiry accepted a missing Transaction ID.');
+    verify(file_put_contents($configurationPath, $configuration) === strlen($configuration),
+        'Could not restore the synthetic Transaction Inquiry configuration.');
+
+    $transactionUrl = 'https://accept.paymob.com/api/acceptance/transactions/42';
+    $transactionClassifier = ProviderAttemptStageClassifier::fromConfig($transactionConfig);
+    verify(
+        $transactionClassifier->classify($transactionUrl, []) === 'transaction-inquiry'
+        && $transactionClassifier->classify($transactionUrl, null) === 'transaction-inquiry-retry',
+        'Transaction Inquiry initial GET or retained empty-body retry was not classified.',
+    );
+    foreach ([
+        [$transactionUrl, []],
+        ['https://accept.paymob.com/api/acceptance/transactions/43', []],
+        ['https://accept.paymob.com/api/ecommerce/orders/transaction_inquiry', []],
+        [$transactionUrl . '?unexpected=1', []],
+        ['https://other.example/api/acceptance/transactions/42', []],
+        [$transactionUrl, ['unexpected' => true]],
+    ] as [$invalidUrl, $invalidRequest]) {
+        $classifier = $invalidUrl === $transactionUrl && $invalidRequest === []
+            ? $transactionClassifier : ProviderAttemptStageClassifier::fromConfig($transactionConfig);
+        $rejected = false;
+        try {
+            $classifier->classify($invalidUrl, $invalidRequest);
+        } catch (RuntimeException) {
+            $rejected = true;
+        }
+        verify($rejected, 'A malformed or third Transaction Inquiry attempt was accepted.');
+    }
+    echo "PASS Transaction Inquiry configuration and closed request classification\n";
+
+    $transactionHttp = new class implements ApiClientInterface {
+        /** @var list<array{uri: string, query: array, headers: array}> */
+        public array $getCalls = [];
+
+        /** @var list<array{uri: string, body: array}> */
+        public array $postCalls = [];
+
+        public bool $rejectFirstGet = false;
+
+        public function post(string $uri, array $body, array $headers = []): array
+        {
+            $this->postCalls[] = ['uri' => $uri, 'body' => $body];
+            return ['token' => 'synthetic-refreshed-auth-token', 'profile' => ['id' => 77]];
+        }
+
+        public function get(string $uri, array $query = [], array $headers = []): array
+        {
+            $this->getCalls[] = ['uri' => $uri, 'query' => $query, 'headers' => $headers];
+            if ($this->rejectFirstGet && count($this->getCalls) === 1) {
+                throw new ApiException('Synthetic unauthorized response.', 401);
+            }
+            return [
+                'id' => 42,
+                'order' => ['id' => 123456, 'payment_status' => 'UNPAID'],
+                'amount_cents' => 15000,
+                'currency' => 'EGP',
+                'success' => false,
+                'pending' => true,
+            ];
+        }
+    };
+    $transactionTokenRepository = new InMemoryTokenRepository();
+    $transactionTokenRepository->save(new TokenResponseDTO(
+        'synthetic-initial-auth-token', 77, time(), time() + 3600,
+    ));
+    $transactionService = new TransactionService(
+        $transactionHttp,
+        new AuthService($transactionHttp, $transactionConfig->packageConfig(), $transactionTokenRepository),
+    );
+    $transactionDto = $transactionService->getTransaction(42);
+    verify(
+        $transactionDto->id === 42
+        && $transactionDto->orderId === 123456
+        && $transactionDto->amountCents === 15000
+        && $transactionDto->currency->value === 'EGP'
+        && $transactionDto->success === false
+        && $transactionDto->pending === true
+        && $transactionDto->paymentStatus === 'UNPAID'
+        && $transactionHttp->getCalls === [[
+            'uri' => '/acceptance/transactions/42',
+            'query' => [],
+            'headers' => ['Authorization' => 'Bearer synthetic-initial-auth-token'],
+        ]]
+        && $transactionHttp->postCalls === [],
+        'TransactionService did not use the exact Bearer GET request and DTO mapping.',
+    );
+    $transactionHttp->getCalls = [];
+    $transactionHttp->rejectFirstGet = true;
+    $transactionService->getTransaction(42);
+    verify(
+        count($transactionHttp->getCalls) === 2
+        && $transactionHttp->getCalls[0]['headers']['Authorization'] === 'Bearer synthetic-initial-auth-token'
+        && $transactionHttp->getCalls[1]['headers']['Authorization'] === 'Bearer synthetic-refreshed-auth-token'
+        && $transactionHttp->getCalls[1]['query'] === []
+        && count($transactionHttp->postCalls) === 1
+        && $transactionHttp->postCalls[0]['uri'] === '/auth/tokens',
+        'TransactionService existing 401 retry did not send the refreshed Bearer token.',
+    );
+
+    $mappingContext = (new ReflectionClass(VerificationContext::class))->newInstanceWithoutConstructor();
+    $mappingMethod = new ReflectionMethod(VerificationContext::class, 'assertTransactionIdMapping');
+    $mappingMethod->invoke($mappingContext, 42, 42);
+    verify(
+        (new ReflectionProperty(VerificationContext::class, 'transactionIdMatchesRequested'))
+            ->getValue($mappingContext) === true,
+        'Matching Transaction IDs were not recorded as consistent.',
+    );
+    $mismatchRejected = false;
+    try {
+        $mappingMethod->invoke($mappingContext, 42, 43);
+    } catch (RuntimeException) {
+        $mismatchRejected = true;
+    }
+    verify(
+        $mismatchRejected
+        && (new ReflectionProperty(VerificationContext::class, 'transactionIdMatchesRequested'))
+            ->getValue($mappingContext) === false
+        && (new ReflectionProperty(VerificationContext::class, 'stage'))
+            ->getValue($mappingContext) === 'transaction-inquiry-id-mapping'
+        && str_contains(
+            $verificationContextSource,
+            "\$diagnostic['service_results']['transaction_inquiry']['transaction_id_matches_requested'] = false;",
+        )
+        && str_contains(
+            $verificationContextSource,
+            "\$diagnostic['failure_classification'] = 'PACKAGE';",
+        ),
+        'A mismatched response Transaction ID did not fail as PACKAGE.',
+    );
+    echo "PASS TransactionService Bearer requests, DTO mapping, and Transaction ID consistency\n";
 
     $requestJson = <<<'JSON'
 {
@@ -1704,6 +1865,147 @@ JSON;
             }
         }
     };
+
+    $transactionSanitizer = new SemanticSanitizer();
+    $transactionResponseObject = (object)[
+        'id' => 42,
+        'order' => (object)['id' => 123456, 'payment_status' => 'UNPAID'],
+        'amount_cents' => 15000,
+        'currency' => 'EGP',
+        'success' => false,
+        'pending' => true,
+    ];
+    $transactionSanitizer->prime([$transactionUrl, $transactionResponseObject]);
+    $safeTransactionUrl = $transactionSanitizer->sanitizeUrl($transactionUrl);
+    $safeTransactionResponse = $transactionSanitizer->sanitize($transactionResponseObject);
+    $safeTransactionPath = parse_url($safeTransactionUrl, PHP_URL_PATH);
+    verify(
+        is_string($safeTransactionPath)
+        && basename($safeTransactionPath) === (string)$safeTransactionResponse->id
+        && basename($safeTransactionPath) !== '42'
+        && $transactionSanitizer->sanitizeUrl('https://accept.paymob.com/api/other/42')
+            === 'https://accept.paymob.com/api/other/42'
+        && !$transactionSanitizer->containsSensitiveValues([
+            'final_url' => $safeTransactionUrl,
+            'response' => $safeTransactionResponse,
+        ]),
+        'Short Transaction ID URL sanitization lost privacy or referential consistency.',
+    );
+    echo "PASS context-specific Transaction ID URL and response mapping\n";
+
+    $transactionRecoveryDirectory = $privateNamespace . DIRECTORY_SEPARATOR
+        . 'run-self-check-transaction-' . bin2hex(random_bytes(6));
+    verify(mkdir($transactionRecoveryDirectory, 0700), 'Synthetic Transaction Inquiry run could not be created.');
+    chmod($transactionRecoveryDirectory, 0700);
+    $syntheticTransactionRecoveryDirectories[] = $transactionRecoveryDirectory;
+    $writeRecoveryRun($transactionRecoveryDirectory, [
+        [
+            'https://accept.paymob.com/api/auth/tokens',
+            ['api_key' => 'self-check-api-key-value'],
+            ['token' => 'synthetic-transaction-auth-token', 'profile' => ['id' => 77]],
+        ],
+        [$transactionUrl, '', [
+            'id' => 42,
+            'order' => ['id' => 123456, 'payment_status' => 'UNPAID'],
+            'amount_cents' => 15000,
+            'currency' => 'EGP',
+            'success' => false,
+            'pending' => true,
+        ]],
+    ]);
+    $transactionSourceBefore = $snapshotSourceRun($transactionRecoveryDirectory);
+    $transactionRecovery = RetainedRunRecovery::recover(
+        $configurationDirectory,
+        $transactionRecoveryDirectory,
+        'transaction-inquiry',
+    );
+    if (is_string($transactionRecovery['artifact']['path'] ?? null)) {
+        $transactionRecoveryArtifactPaths[] = $transactionRecovery['artifact']['path'];
+    }
+    if (is_string($transactionRecovery['failure_artifact']['path'] ?? null)) {
+        $unexpectedRecoveryFailureArtifactPaths[] = $transactionRecovery['failure_artifact']['path'];
+    }
+    verify(
+        $transactionRecovery['result'] === 'PASS'
+        && $transactionRecovery['recovered_stages'] === ['auth', 'transaction-inquiry']
+        && $transactionRecovery['source_raw_retained'] === true
+        && $transactionSourceBefore === $snapshotSourceRun($transactionRecoveryDirectory),
+        'Synthetic Transaction Inquiry recovery failed or modified retained raw evidence.',
+    );
+    $transactionRecovered = $transactionRecovery['report'];
+    $transactionRecoveredGet = $transactionRecovered['exchanges'][1];
+    $recoveredTransactionPath = parse_url($transactionRecoveredGet['final_url'], PHP_URL_PATH);
+    verify(
+        $transactionRecoveredGet['sanitized_request'] === null
+        && $transactionRecoveredGet['request_body_bytes'] === 0
+        && $transactionRecoveredGet['request_json_valid'] === null
+        && $transactionRecovered['exchanges'][0]['request_json_valid'] === true
+        && is_string($recoveredTransactionPath)
+        && basename($recoveredTransactionPath)
+            === (string)$transactionRecoveredGet['sanitized_response_fixture_candidate']['id']
+        && basename($recoveredTransactionPath) !== '42'
+        && $transactionRecoveredGet['sanitized_response_fixture_candidate']['success'] === false
+        && $transactionRecoveredGet['sanitized_response_fixture_candidate']['pending'] === true
+        && $transactionRecoveredGet['sanitized_response_fixture_candidate']['order']['payment_status'] === 'UNPAID'
+        && $transactionRecovered['leak_guard_result'] === 'PASS'
+        && $transactionRecovered['referential_consistency_result'] === 'PASS',
+        'Recovered empty GET or sanitized Transaction ID mapping did not preserve its contract.',
+    );
+    $transactionArtifact = $transactionRecovery['artifact'];
+    $transactionArtifactBytes = file_get_contents($transactionArtifact['path']);
+    verify(
+        is_string($transactionArtifactBytes)
+        && strlen($transactionArtifactBytes) === $transactionArtifact['bytes']
+        && hash_equals($transactionArtifact['sha256'], hash('sha256', $transactionArtifactBytes))
+        && (fileperms(dirname($transactionArtifact['path'])) & 0777) === 0700
+        && (fileperms($transactionArtifact['path']) & 0777) === 0600
+        && !str_contains($transactionArtifactBytes, $transactionUrl)
+        && !str_contains($transactionArtifactBytes, 'synthetic-transaction-auth-token'),
+        'Transaction Inquiry recovery artifact failed integrity, permissions, or privacy checks.',
+    );
+    $transactionRecoveryAgain = RetainedRunRecovery::recover(
+        $configurationDirectory,
+        $transactionRecoveryDirectory,
+        'transaction-inquiry',
+    );
+    if (is_string($transactionRecoveryAgain['artifact']['path'] ?? null)) {
+        $transactionRecoveryArtifactPaths[] = $transactionRecoveryAgain['artifact']['path'];
+    }
+    if (is_string($transactionRecoveryAgain['failure_artifact']['path'] ?? null)) {
+        $unexpectedRecoveryFailureArtifactPaths[] = $transactionRecoveryAgain['failure_artifact']['path'];
+    }
+    verify(
+        $transactionRecoveryAgain['result'] === 'PASS'
+        && $transactionRecoveryAgain['artifact']['path'] !== $transactionArtifact['path']
+        && $transactionSourceBefore === $snapshotSourceRun($transactionRecoveryDirectory)
+        && hash_equals($transactionArtifact['sha256'], hash_file('sha256', $transactionArtifact['path'])),
+        'Repeated Transaction Inquiry recovery replaced an artifact or changed retained raw evidence.',
+    );
+
+    $nonemptyTransactionDirectory = $privateNamespace . DIRECTORY_SEPARATOR
+        . 'run-self-check-transaction-nonempty-' . bin2hex(random_bytes(6));
+    verify(mkdir($nonemptyTransactionDirectory, 0700), 'Synthetic nonempty GET run could not be created.');
+    chmod($nonemptyTransactionDirectory, 0700);
+    $syntheticTransactionRecoveryDirectories[] = $nonemptyTransactionDirectory;
+    $writeRecoveryRun($nonemptyTransactionDirectory, [
+        [$transactionUrl, 'null', ['id' => 42]],
+    ]);
+    $nonemptyTransactionBefore = $snapshotSourceRun($nonemptyTransactionDirectory);
+    $nonemptyRecovery = RetainedRunRecovery::recover(
+        $configurationDirectory,
+        $nonemptyTransactionDirectory,
+        'transaction-inquiry',
+    );
+    if (is_string($nonemptyRecovery['failure_artifact']['path'] ?? null)) {
+        $unexpectedRecoveryFailureArtifactPaths[] = $nonemptyRecovery['failure_artifact']['path'];
+    }
+    verify(
+        $nonemptyRecovery['result'] === 'FAIL'
+        && $nonemptyRecovery['source_raw_retained'] === true
+        && $nonemptyTransactionBefore === $snapshotSourceRun($nonemptyTransactionDirectory),
+        'Recovery accepted a nonempty Transaction Inquiry GET body or changed retained raw evidence.',
+    );
+    echo "PASS Transaction Inquiry empty-GET recovery, source retention, and artifact verification\n";
 
     $kioskAuthExchange = [
         'https://accept.paymob.com/api/auth/tokens',
@@ -2849,7 +3151,12 @@ JSON;
         $recoveryArtifactPathB,
         $recoveryFailureArtifactPath,
     ];
-    $selfCheckArtifactPaths = array_merge($selfCheckArtifactPaths, $kioskRecoveryArtifactPaths, $cardRecoveryArtifactPaths);
+    $selfCheckArtifactPaths = array_merge(
+        $selfCheckArtifactPaths,
+        $kioskRecoveryArtifactPaths,
+        $cardRecoveryArtifactPaths,
+        $transactionRecoveryArtifactPaths,
+    );
     if ($legacyRecoverySentinelOwned && $legacyRecoveryArtifactPath !== null) {
         $selfCheckArtifactPaths[] = $legacyRecoveryArtifactPath;
     }
@@ -2937,6 +3244,23 @@ JSON;
         }
         if (is_dir($syntheticCardRecoveryDirectory) && !rmdir($syntheticCardRecoveryDirectory)) {
             $failure ??= new RuntimeException('Synthetic Card retained-run directory cleanup failed.');
+        }
+    }
+    foreach ($syntheticTransactionRecoveryDirectories as $syntheticTransactionRecoveryDirectory) {
+        if (!is_dir($syntheticTransactionRecoveryDirectory)) {
+            continue;
+        }
+        foreach (scandir($syntheticTransactionRecoveryDirectory) ?: [] as $fileName) {
+            if ($fileName === '.' || $fileName === '..') {
+                continue;
+            }
+            $path = $syntheticTransactionRecoveryDirectory . DIRECTORY_SEPARATOR . $fileName;
+            if (is_file($path) && !is_link($path) && !unlink($path)) {
+                $failure ??= new RuntimeException('Synthetic Transaction Inquiry retained-run cleanup failed.');
+            }
+        }
+        if (is_dir($syntheticTransactionRecoveryDirectory) && !rmdir($syntheticTransactionRecoveryDirectory)) {
+            $failure ??= new RuntimeException('Synthetic Transaction Inquiry retained-run directory cleanup failed.');
         }
     }
     if ($syntheticRecoveryConfigDirectory !== null && is_file($syntheticRecoveryConfigDirectory . DIRECTORY_SEPARATOR . '.env')) {
