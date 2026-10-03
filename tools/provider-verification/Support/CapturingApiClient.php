@@ -10,15 +10,15 @@ use Maatify\Paymob\Exception\NetworkException;
 use Maatify\Paymob\Http\ApiClientInterface;
 use RuntimeException;
 use stdClass;
+use Throwable;
 
 /** Sends package-service requests over verified TLS and captures each exchange privately. */
 final class CapturingApiClient implements ApiClientInterface
 {
-    private string $stage = 'preflight';
-
     public function __construct(
         private readonly string $baseUrl,
         private readonly CaptureSession $captureSession,
+        private readonly ProviderAttemptStageClassifier $attemptStageClassifier,
         private readonly int $connectTimeoutSeconds = 15,
         private readonly int $timeoutSeconds = 45,
     ) {
@@ -30,10 +30,10 @@ final class CapturingApiClient implements ApiClientInterface
         }
     }
 
-    /** Label subsequent captured exchanges with their current service-flow step. */
-    public function setStage(string $stage): void
+    /** Classify one attempted request without executing or capturing provider traffic. */
+    public function classifyAttemptStage(string $url, mixed $requestShape): string
     {
-        $this->stage = $stage;
+        return $this->attemptStageClassifier->classify($url, $requestShape);
     }
 
     /**
@@ -95,6 +95,9 @@ final class CapturingApiClient implements ApiClientInterface
 
     private function send(string $method, string $url, string $requestBody, array $headers, array $requestShape): array
     {
+        // Redirects are disabled, so this validated target is the actual provider URL.
+        // Classify before creating or executing a transport handle; unknown requests never leave the process.
+        $stage = $this->classifyAttemptStage($url, $requestShape);
         $curl = curl_init($url);
         if ($curl === false) {
             throw new NetworkException('Could not initialize the provider verification transport.');
@@ -125,7 +128,7 @@ final class CapturingApiClient implements ApiClientInterface
         unset($curl);
 
         $sequence = $this->captureSession->captureExchange([
-            'stage' => $this->stage,
+            'stage' => $stage,
             'method' => $method,
             'final_url_raw' => $finalUrl !== '' ? $finalUrl : $url,
             'request_header_names' => $requestHeaderNames,
