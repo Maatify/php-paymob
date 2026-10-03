@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/bootstrap.php';
 
+use Maatify\Paymob\DTO\Payment\KioskPaymentRequestDTO;
+use Maatify\Paymob\DTO\Payment\KioskPaymentResponseDTO;
+use Maatify\Paymob\Enum\CurrencyEnum;
 use Maatify\Paymob\ProviderVerification\Support\CaptureSession;
 use Maatify\Paymob\ProviderVerification\Support\CapturingApiClient;
 use Maatify\Paymob\ProviderVerification\Support\RetainedRunRecovery;
@@ -28,6 +31,9 @@ $failureArtifactPath = null;
 $recoveryArtifactPath = null;
 $recoveryArtifactPathB = null;
 $recoveryFailureArtifactPath = null;
+$kioskRecoveryArtifactPaths = [];
+$syntheticKioskRecoveryDirectories = [];
+$syntheticKioskConfigDirectory = null;
 $legacyRecoveryArtifactPath = null;
 $legacyRecoverySentinelOwned = false;
 $unexpectedRecoveryFailureArtifactPaths = [];
@@ -972,13 +978,11 @@ JSON;
         ];
     };
     $syntheticSourceIdentity = basename($syntheticRecoveryDirectory);
-    $expectedArtifactNamePattern = '/^' . preg_quote($syntheticSourceIdentity, '/')
-        . '-recovered-wallet-\\d{8}T\\d{6}Z-[a-f0-9]{16}\\.json$/D';
-    $validateRecoveryArtifact = static function (array $recovery) use (
-        $expectedArtifactNamePattern,
-        $repositoryPath,
-        $snapshotFile,
-    ): array {
+    $validateRecoveryArtifact = static function (
+        array $recovery,
+        string $scenario,
+        string $sourceIdentity,
+    ) use ($repositoryPath, $snapshotFile): array {
         $artifact = $recovery['artifact'] ?? null;
         verify(is_array($artifact) && is_string($artifact['path'] ?? null), 'Successful recovery omitted its artifact path.');
         verify(is_int($artifact['bytes'] ?? null) && is_string($artifact['sha256'] ?? null), 'Successful recovery omitted artifact size or hash metadata.');
@@ -992,7 +996,11 @@ JSON;
             'Successful recovery artifact is not a regular non-symlink file.',
         );
         verify(
-            preg_match($expectedArtifactNamePattern, basename($realPath)) === 1,
+            preg_match(
+                '/^' . preg_quote($sourceIdentity, '/') . '-recovered-' . preg_quote($scenario, '/')
+                . '-\\d{8}T\\d{6}Z-[a-f0-9]{16}\\.json$/D',
+                basename($realPath),
+            ) === 1,
             'Successful recovery artifact name omitted its source, scenario, UTC time, or random suffix.',
         );
         verify(
@@ -1055,7 +1063,12 @@ JSON;
     if (is_string($recoveryResult['failure_artifact']['path'] ?? null)) {
         $unexpectedRecoveryFailureArtifactPaths[] = $recoveryResult['failure_artifact']['path'];
     }
-    verify($recoveryResult['result'] === 'PASS', 'Synthetic offline recovery failed.');
+    verify(
+        $recoveryResult['result'] === 'PASS'
+        && $recoveryResult['scenario'] === 'wallet'
+        && $recoveryResult['report']['source']['scenario'] === 'wallet',
+        'Synthetic offline Wallet recovery failed or lost its selected scenario.',
+    );
     verify($recoveryResult['exchange_count'] === 4, 'Synthetic recovery did not discover four triplets.');
     verify(
         $recoveryResult['recovered_stages'] === ['auth', 'order', 'payment-key-wallet', 'wallet-initiation'],
@@ -1064,7 +1077,7 @@ JSON;
     verify($recoveryResult['source_raw_retained'] === true, 'Recovery did not retain the synthetic source run.');
     verify(is_string($recoveryResult['artifact']['path'] ?? null), 'First recovery did not return an artifact path.');
     $recoveryArtifactPath = $recoveryResult['artifact']['path'];
-    $recoveryArtifactSnapshot = $validateRecoveryArtifact($recoveryResult);
+    $recoveryArtifactSnapshot = $validateRecoveryArtifact($recoveryResult, 'wallet', $syntheticSourceIdentity);
     $recoveryReport = $recoveryResult['report'];
     verify(
         $recoveryReport['source']['exchange_count'] === 4
@@ -1264,7 +1277,7 @@ JSON;
         && $recoveryArtifactPathB !== $legacyRecoveryArtifactPath,
         'Successful recovery reused the first artifact or the legacy fixed-name sentinel path.',
     );
-    $recoveryArtifactSnapshotB = $validateRecoveryArtifact($recoveryResultB);
+    $recoveryArtifactSnapshotB = $validateRecoveryArtifact($recoveryResultB, 'wallet', $syntheticSourceIdentity);
     $recoveryReportB = $recoveryResultB['report'];
     $recoveryReportWithoutTimestamp = $recoveryReport;
     $recoveryReportBWithoutTimestamp = $recoveryReportB;
@@ -1302,6 +1315,543 @@ JSON;
     echo "PASS F12 legacy-name collision sentinel, two unique recoveries, artifact read-back, permissions, and retained source snapshots\n";
     echo "PASS network-free retained-run recovery, stage derivation, sanitization, metadata honesty, referential consistency, and retained source\n";
 
+    $kioskIntegrationId = 982341;
+    $kioskApiKey = 'kiosk-self-check-api-secret';
+    $kioskHmacSecret = 'kiosk-self-check-hmac-secret';
+    $kioskAuthToken = 'synthetic-kiosk-auth-token';
+    $kioskRefreshedAuthToken = 'synthetic-kiosk-refreshed-auth-token';
+    $kioskPaymentToken = 'synthetic-kiosk-payment-token';
+    $kioskMerchantOrderReference = 'synthetic-kiosk-private-merchant-order-reference';
+    $kioskBillReference = 765432109;
+
+    $syntheticKioskConfigDirectory = sys_get_temp_dir() . DIRECTORY_SEPARATOR
+        . 'paymob-recovery-kiosk-config-' . bin2hex(random_bytes(6));
+    verify(
+        mkdir($syntheticKioskConfigDirectory, 0700),
+        'Synthetic Kiosk configuration directory could not be created.',
+    );
+    $kioskConfigPath = $syntheticKioskConfigDirectory . DIRECTORY_SEPARATOR . '.env';
+    $kioskConfig = "PAYMOB_API_KEY={$kioskApiKey}\n"
+        . "PAYMOB_HMAC_SECRET={$kioskHmacSecret}\n"
+        . "PAYMOB_BASE_URL=https://accept.paymob.com/api\n"
+        . "PAYMOB_INTEGRATION_ID_KIOSK={$kioskIntegrationId}\n";
+    verify(
+        file_put_contents($kioskConfigPath, $kioskConfig) === strlen($kioskConfig),
+        'Synthetic Kiosk configuration could not be written.',
+    );
+    chmod($kioskConfigPath, 0600);
+    $kioskConfigDTO = VerificationConfig::load($syntheticKioskConfigDirectory, 'kiosk');
+    verify(
+        $kioskConfigDTO->kioskIntegrationId === $kioskIntegrationId
+        && $kioskConfigDTO->walletIntegrationId === null
+        && $kioskConfigDTO->walletTestMsisdn === null,
+        'Kiosk recovery configuration incorrectly requires or selects Wallet inputs.',
+    );
+
+    $kioskRequestDTO = new KioskPaymentRequestDTO($kioskPaymentToken);
+    $kioskDTORequest = $kioskRequestDTO->toArray($kioskAuthToken);
+    verify(
+        $kioskDTORequest === [
+            'source' => ['identifier' => 'AGGREGATOR', 'subtype' => 'AGGREGATOR'],
+            'payment_token' => $kioskPaymentToken,
+            'auth_token' => $kioskAuthToken,
+        ],
+        'Kiosk request DTO did not produce the accepted AGGREGATOR request contract.',
+    );
+    echo "PASS Kiosk request DTO AGGREGATOR contract with synthetic tokens\n";
+
+    $syntheticKioskResponse = [
+        'id' => 887766,
+        'order' => [
+            'id' => 123456,
+            'merchant_order_id' => $kioskMerchantOrderReference,
+            'payment_status' => 'UNPAID',
+        ],
+        'amount_cents' => 15000,
+        'currency' => 'EGP',
+        'pending' => true,
+        'success' => false,
+        'created_at' => '2026-10-03T10:02:00Z',
+        'updated_at' => '2026-10-03T10:03:00Z',
+        'data' => [
+            'bill_reference' => $kioskBillReference,
+            'klass' => 'CAGGPayment',
+            'message' => 'Pending Payment',
+            'txn_response_code' => '05',
+        ],
+    ];
+    $kioskResponseDTO = KioskPaymentResponseDTO::fromArray($syntheticKioskResponse);
+    verify(
+        $kioskResponseDTO->transactionId === 887766
+        && $kioskResponseDTO->orderId === 123456
+        && $kioskResponseDTO->merchantOrderId === $kioskMerchantOrderReference
+        && $kioskResponseDTO->amountCents === 15000
+        && $kioskResponseDTO->currency === CurrencyEnum::EGP
+        && $kioskResponseDTO->pending === true
+        && $kioskResponseDTO->success === false
+        && $kioskResponseDTO->billReference === $kioskBillReference
+        && $kioskResponseDTO->statusMessage === 'Pending Payment'
+        && $kioskResponseDTO->paymentStatus === 'UNPAID'
+        && $kioskResponseDTO->createdAt === '2026-10-03T10:02:00Z'
+        && $kioskResponseDTO->updatedAt === '2026-10-03T10:03:00Z',
+        'Kiosk response DTO did not map the accepted synthetic provider response.',
+    );
+    echo "PASS Kiosk response DTO mapping for IDs, amount/currency, outcome, bill reference, and status\n";
+
+    $syntheticKioskResponseJson = json_encode($syntheticKioskResponse, JSON_THROW_ON_ERROR);
+    $syntheticKioskResponseObject = json_decode($syntheticKioskResponseJson, false, 512, JSON_THROW_ON_ERROR);
+    verify(
+        $syntheticKioskResponseObject instanceof stdClass,
+        'Synthetic Kiosk response did not decode to a JSON object.',
+    );
+    $kioskSanitizer = new SemanticSanitizer([$kioskApiKey, $kioskHmacSecret]);
+    $kioskSanitizer->prime([$syntheticKioskResponseObject]);
+    $sanitizedKioskResponse = $kioskSanitizer->sanitize($syntheticKioskResponseObject, '', '$.kiosk_response');
+    verify(
+        $kioskSanitizer->sameShape($syntheticKioskResponseObject, $sanitizedKioskResponse),
+        'Kiosk sanitization changed JSON shape or scalar types.',
+    );
+    verify(
+        $kioskSanitizer->semanticDifferences($syntheticKioskResponseObject, $sanitizedKioskResponse) === [],
+        'Kiosk sanitization changed provider-semantic values.',
+    );
+    verify(
+        $kioskSanitizer->sensitiveFieldDifferences($syntheticKioskResponseObject, $sanitizedKioskResponse) === [],
+        'Kiosk sanitization left a sensitive field unchanged.',
+    );
+    verify(
+        !$kioskSanitizer->containsSensitiveValues($sanitizedKioskResponse),
+        'Synthetic Kiosk response failed the shared leak guard.',
+    );
+    verify(
+        $sanitizedKioskResponse->data->klass === 'CAGGPayment'
+        && $sanitizedKioskResponse->data->message === 'Pending Payment'
+        && $sanitizedKioskResponse->data->txn_response_code === '05'
+        && $sanitizedKioskResponse->order->payment_status === 'UNPAID'
+        && $sanitizedKioskResponse->amount_cents === 15000
+        && $sanitizedKioskResponse->currency === 'EGP'
+        && $sanitizedKioskResponse->pending === true
+        && $sanitizedKioskResponse->success === false,
+        'Kiosk sanitization changed accepted provider semantics.',
+    );
+    verify(
+        is_int($syntheticKioskResponseObject->data->bill_reference)
+        && is_int($sanitizedKioskResponse->data->bill_reference)
+        && $sanitizedKioskResponse->data->bill_reference !== $syntheticKioskResponseObject->data->bill_reference,
+        'Kiosk bill_reference sanitization did not preserve scalar type while replacing its private value.',
+    );
+    echo "PASS Kiosk shared sanitizer shape, semantics, sensitive fields, private bill reference, and leak guard\n";
+
+    $makeKioskRecoveryDirectory = static function (string $label) use (
+        $privateNamespace,
+        &$syntheticKioskRecoveryDirectories,
+    ): string {
+        $directory = $privateNamespace . DIRECTORY_SEPARATOR . 'run-self-check-kiosk-'
+            . $label . '-' . bin2hex(random_bytes(6));
+        verify(mkdir($directory, 0700), 'Synthetic Kiosk retained run could not be created.');
+        chmod($directory, 0700);
+        $syntheticKioskRecoveryDirectories[] = $directory;
+
+        return $directory;
+    };
+    $writeKioskRecoveryRun = static function (string $directory, array $exchanges): void {
+        foreach ($exchanges as $index => [$url, $request, $response]) {
+            $prefix = str_pad((string)($index + 1), 4, '0', STR_PAD_LEFT);
+            $requestBody = is_string($request) ? $request : json_encode($request, JSON_THROW_ON_ERROR);
+            $responseBody = is_string($response) ? $response : json_encode($response, JSON_THROW_ON_ERROR);
+            foreach ([
+                $prefix . '-request-url.txt' => $url,
+                $prefix . '-request-body.bin' => $requestBody,
+                $prefix . '-response-body.bin' => $responseBody,
+            ] as $fileName => $contents) {
+                $path = $directory . DIRECTORY_SEPARATOR . $fileName;
+                verify(
+                    file_put_contents($path, $contents, LOCK_EX) === strlen($contents),
+                    'Synthetic Kiosk raw exchange file could not be written.',
+                );
+                chmod($path, 0600);
+            }
+        }
+    };
+
+    $kioskAuthExchange = [
+        'https://accept.paymob.com/api/auth/tokens',
+        ['api_key' => $kioskApiKey],
+        [
+            'token' => $kioskAuthToken,
+            'profile' => [
+                'id' => 456789,
+                'email' => 'kiosk-private-person@example.org',
+                'phones' => ['synthetic-kiosk-auth-phone-zero', 'synthetic-kiosk-auth-phone-one', null],
+                'sms_sender_name' => 'Synthetic Kiosk Private Sender',
+            ],
+            'issued_at' => '2026-10-03T10:00:00Z',
+        ],
+    ];
+    $kioskOrderExchange = [
+        'https://accept.paymob.com/api/ecommerce/orders',
+        [
+            'amount_cents' => 15000,
+            'currency' => 'EGP',
+            'merchant_order_id' => $kioskMerchantOrderReference,
+            'items' => [['name' => 'Synthetic Kiosk Order', 'amount_cents' => 15000, 'quantity' => 1]],
+        ],
+        [
+            'id' => 123456,
+            'merchant_order_id' => $kioskMerchantOrderReference,
+            'payment_status' => 'UNPAID',
+            'created_at' => '2026-10-03T10:01:00Z',
+        ],
+    ];
+    $kioskPaymentKeyExchange = [
+        'https://accept.paymob.com/api/acceptance/payment_keys',
+        [
+            'auth_token' => $kioskAuthToken,
+            'order_id' => 123456,
+            'integration_id' => $kioskIntegrationId,
+            'amount_cents' => 15000,
+            'currency' => 'EGP',
+            'billing_data' => [
+                'first_name' => 'Synthetic Kiosk Customer',
+                'last_name' => 'Private Example',
+                'building' => '77',
+                'floor' => '2',
+                'apartment' => '4',
+                'postal_code' => '12345',
+                'street' => 'Synthetic Kiosk Private Street',
+                'city' => 'Synthetic Kiosk City',
+                'state' => 'Synthetic Kiosk State',
+                'email' => 'kiosk-private-person@example.org',
+                'phone_number' => '+201234567890',
+            ],
+        ],
+        [
+            'token' => $kioskPaymentToken,
+            'order_id' => 123456,
+            'integration_id' => $kioskIntegrationId,
+            'currency' => 'EGP',
+            'status' => 'issued',
+        ],
+    ];
+    $kioskPaymentExchange = [
+        'https://accept.paymob.com/api/acceptance/payments/pay',
+        $kioskRequestDTO->toArray($kioskAuthToken),
+        $syntheticKioskResponse,
+    ];
+    $kioskFourExchangeRun = [
+        $kioskAuthExchange,
+        $kioskOrderExchange,
+        $kioskPaymentKeyExchange,
+        $kioskPaymentExchange,
+    ];
+
+    $kioskRecoveryDirectory = $makeKioskRecoveryDirectory('four-stage');
+    $writeKioskRecoveryRun($kioskRecoveryDirectory, $kioskFourExchangeRun);
+    $kioskSourceSnapshot = $snapshotSourceRun($kioskRecoveryDirectory);
+    $kioskSourceIdentity = basename($kioskRecoveryDirectory);
+    $kioskRecoveryResult = RetainedRunRecovery::recover(
+        $syntheticKioskConfigDirectory,
+        $kioskRecoveryDirectory,
+        'kiosk',
+    );
+    if (is_string($kioskRecoveryResult['artifact']['path'] ?? null)) {
+        $kioskRecoveryArtifactPaths[] = $kioskRecoveryResult['artifact']['path'];
+    }
+    if (is_string($kioskRecoveryResult['failure_artifact']['path'] ?? null)) {
+        $unexpectedRecoveryFailureArtifactPaths[] = $kioskRecoveryResult['failure_artifact']['path'];
+    }
+    verify(
+        $kioskRecoveryResult['result'] === 'PASS'
+        && $kioskRecoveryResult['scenario'] === 'kiosk'
+        && $kioskRecoveryResult['exchange_count'] === 4
+        && $kioskRecoveryResult['recovered_stages'] === [
+            'auth', 'order', 'payment-key-kiosk', 'kiosk-payment',
+        ]
+        && $kioskRecoveryResult['source_raw_retained'] === true,
+        'Synthetic four-exchange Kiosk recovery failed or derived incorrect scenario/stages.',
+    );
+    $kioskRecoveryArtifactPath = $kioskRecoveryResult['artifact']['path'];
+    $kioskRecoverySnapshot = $validateRecoveryArtifact($kioskRecoveryResult, 'kiosk', $kioskSourceIdentity);
+    $kioskRecoveryReport = $kioskRecoveryResult['report'];
+    verify(
+        $kioskRecoveryReport['source']['scenario'] === 'kiosk'
+        && $kioskRecoveryReport['source']['exchange_count'] === 4
+        && $kioskRecoveryReport['source']['source_raw_retained'] === true,
+        'Kiosk recovery report did not preserve selected scenario or source retention.',
+    );
+    verify(
+        is_string($kioskRecoveryResult['artifact']['path'] ?? null),
+        'Successful Kiosk recovery omitted its artifact path.',
+    );
+    foreach ($kioskRecoveryReport['exchanges'] as $exchange) {
+        verify(
+            $exchange['metadata_source'] === 'unavailable_from_retained_raw'
+            && $exchange['method'] === null
+            && $exchange['http_status'] === null
+            && $exchange['transport_ok'] === null
+            && $exchange['curl_errno'] === null
+            && $exchange['curl_error'] === null
+            && $exchange['request_header_names'] === null
+            && $exchange['response_header_names'] === null,
+            'Kiosk recovery invented runtime-only metadata unavailable from retained raw files.',
+        );
+    }
+
+    $kioskRecoveredResponse = $kioskRecoveryReport['exchanges'][3]['sanitized_response_fixture_candidate'];
+    verify(
+        $kioskRecoveredResponse['data']['klass'] === 'CAGGPayment'
+        && $kioskRecoveredResponse['data']['message'] === 'Pending Payment'
+        && $kioskRecoveredResponse['data']['txn_response_code'] === '05'
+        && $kioskRecoveredResponse['order']['payment_status'] === 'UNPAID'
+        && $kioskRecoveredResponse['amount_cents'] === 15000
+        && $kioskRecoveredResponse['currency'] === 'EGP'
+        && $kioskRecoveredResponse['pending'] === true
+        && $kioskRecoveredResponse['success'] === false,
+        'Kiosk recovery artifact changed accepted provider semantics.',
+    );
+    $kioskRecoveredBillingData = $kioskRecoveryReport['exchanges'][2]['sanitized_request']['billing_data'];
+    verify(
+        $kioskRecoveredBillingData['first_name'] === '<SANITIZED_NAME>'
+        && $kioskRecoveredBillingData['last_name'] === '<SANITIZED_NAME>'
+        && $kioskRecoveredBillingData['building'] !== '77'
+        && $kioskRecoveredBillingData['floor'] !== '2'
+        && $kioskRecoveredBillingData['apartment'] !== '4'
+        && $kioskRecoveredBillingData['postal_code'] === '<SANITIZED_ADDRESS>'
+        && $kioskRecoveredBillingData['street'] === '<SANITIZED_ADDRESS>'
+        && $kioskRecoveredBillingData['city'] === '<SANITIZED_ADDRESS>'
+        && $kioskRecoveredBillingData['state'] === '<SANITIZED_ADDRESS>'
+        && $kioskRecoveredBillingData['email'] === 'customer@example.test'
+        && $kioskRecoveredBillingData['phone_number'] === '+20000000000',
+        'Kiosk recovery did not redact synthetic billing name, address, email, or phone PII.',
+    );
+    $billReferenceMappingPath = '$.exchanges[4].response.data.bill_reference';
+    $billReferenceMapping = null;
+    foreach ($kioskRecoveryReport['id_mappings'] as $mapping) {
+        if (in_array($billReferenceMappingPath, $mapping['paths'], true)) {
+            $billReferenceMapping = $mapping;
+            break;
+        }
+    }
+    verify(
+        is_array($billReferenceMapping)
+        && $billReferenceMapping['fake_type'] === 'int'
+        && is_int($billReferenceMapping['fake_value'])
+        && $billReferenceMapping['fake_value'] !== $kioskBillReference
+        && $kioskRecoveredResponse['data']['bill_reference'] === $billReferenceMapping['fake_value'],
+        'Kiosk bill reference did not use the shared type-preserving ID mapping summary.',
+    );
+    verify(
+        $kioskRecoveryReport['leak_guard_result'] === 'PASS'
+        && $kioskRecoveryReport['referential_consistency_result'] === 'PASS',
+        'Kiosk recovery omitted leak-guard or referential-consistency evidence.',
+    );
+    $kioskOrderRequest = $kioskRecoveryReport['exchanges'][1]['sanitized_request'];
+    $kioskOrderResponse = $kioskRecoveryReport['exchanges'][1]['sanitized_response_fixture_candidate'];
+    verify(
+        $kioskOrderRequest['merchant_order_id'] === $kioskOrderResponse['merchant_order_id']
+        && $kioskOrderResponse['merchant_order_id'] === $kioskRecoveredResponse['order']['merchant_order_id'],
+        'Kiosk merchant/order private references lost their shared sanitizer mapping.',
+    );
+    verify(
+        $kioskRecoveryReport['exchanges'][0]['sanitized_response_fixture_candidate']['profile']['phones'] === [
+            '+20000000000', '+20000000000', null,
+        ]
+        && $kioskRecoveryReport['exchanges'][0]['sanitized_response_fixture_candidate']['profile']['email']
+            === 'customer@example.test'
+        && $kioskRecoveryReport['exchanges'][0]['sanitized_response_fixture_candidate']['profile']['sms_sender_name']
+            === '<SANITIZED_NAME>',
+        'Kiosk recovery did not preserve and sanitize auth profile phones[] and sms_sender_name.',
+    );
+    foreach ([
+        $kioskApiKey,
+        $kioskHmacSecret,
+        $kioskAuthToken,
+        $kioskRefreshedAuthToken,
+        $kioskPaymentToken,
+        $kioskMerchantOrderReference,
+        'kiosk-private-person@example.org',
+        '+201234567890',
+        'Synthetic Kiosk Customer',
+        'Private Example',
+        'Synthetic Kiosk Private Street',
+        'Synthetic Kiosk City',
+        'Synthetic Kiosk Private State',
+        'synthetic-kiosk-auth-phone-zero',
+        'Synthetic Kiosk Private Sender',
+    ] as $kioskSensitiveLiteral) {
+        verify(
+            !str_contains($kioskRecoverySnapshot['contents'], $kioskSensitiveLiteral),
+            'Sanitized Kiosk artifact contains a synthetic secret, private reference, or PII literal.',
+        );
+    }
+    verify(
+        $kioskSourceSnapshot === $snapshotSourceRun($kioskRecoveryDirectory),
+        'Four-stage Kiosk recovery modified its synthetic retained source run.',
+    );
+    echo "PASS synthetic Kiosk four-stage recovery with safe semantics, references, PII, and metadata\n";
+
+    $kioskRecoveryResultB = RetainedRunRecovery::recover(
+        $syntheticKioskConfigDirectory,
+        $kioskRecoveryDirectory,
+        'kiosk',
+    );
+    if (is_string($kioskRecoveryResultB['artifact']['path'] ?? null)) {
+        $kioskRecoveryArtifactPaths[] = $kioskRecoveryResultB['artifact']['path'];
+    }
+    if (is_string($kioskRecoveryResultB['failure_artifact']['path'] ?? null)) {
+        $unexpectedRecoveryFailureArtifactPaths[] = $kioskRecoveryResultB['failure_artifact']['path'];
+    }
+    verify(
+        $kioskRecoveryResultB['result'] === 'PASS'
+        && $kioskRecoveryResultB['artifact']['path'] !== $kioskRecoveryArtifactPath,
+        'Repeated Kiosk recovery reused an existing artifact name.',
+    );
+    $kioskRecoveryArtifactPathB = $kioskRecoveryResultB['artifact']['path'];
+    $kioskRecoverySnapshotB = $validateRecoveryArtifact($kioskRecoveryResultB, 'kiosk', $kioskSourceIdentity);
+    verify(
+        $kioskRecoverySnapshot === $snapshotFile($kioskRecoveryArtifactPath)
+        && $kioskRecoverySnapshotB === $snapshotFile($kioskRecoveryArtifactPathB),
+        'Repeated Kiosk recovery changed an earlier artifact or failed to persist a unique artifact.',
+    );
+    verify(
+        $kioskSourceSnapshot === $snapshotSourceRun($kioskRecoveryDirectory),
+        'Repeated Kiosk recovery modified its synthetic retained source run.',
+    );
+    echo "PASS Kiosk unique non-overwriting recovery artifacts\n";
+
+    $kioskRetryAuthExchange = [
+        'https://accept.paymob.com/api/auth/tokens',
+        ['api_key' => $kioskApiKey],
+        [
+            'token' => $kioskRefreshedAuthToken,
+            'profile' => [
+                'id' => 456789,
+                'email' => 'kiosk-private-person@example.org',
+                'phones' => ['synthetic-kiosk-auth-phone-zero', 'synthetic-kiosk-auth-phone-one', null],
+            ],
+            'issued_at' => '2026-10-03T10:04:00Z',
+        ],
+    ];
+    $kioskRetryExchanges = [
+        $kioskAuthExchange,
+        $kioskOrderExchange,
+        $kioskPaymentKeyExchange,
+        $kioskPaymentExchange,
+        $kioskRetryAuthExchange,
+        [
+            'https://accept.paymob.com/api/acceptance/payments/pay',
+            $kioskRequestDTO->toArray($kioskRefreshedAuthToken),
+            $syntheticKioskResponse,
+        ],
+    ];
+    $kioskRetryDirectory = $makeKioskRecoveryDirectory('retry');
+    $writeKioskRecoveryRun($kioskRetryDirectory, $kioskRetryExchanges);
+    $kioskRetrySourceSnapshot = $snapshotSourceRun($kioskRetryDirectory);
+    $kioskRetryResult = RetainedRunRecovery::recover(
+        $syntheticKioskConfigDirectory,
+        $kioskRetryDirectory,
+        'kiosk',
+    );
+    if (is_string($kioskRetryResult['artifact']['path'] ?? null)) {
+        $kioskRecoveryArtifactPaths[] = $kioskRetryResult['artifact']['path'];
+    }
+    if (is_string($kioskRetryResult['failure_artifact']['path'] ?? null)) {
+        $unexpectedRecoveryFailureArtifactPaths[] = $kioskRetryResult['failure_artifact']['path'];
+    }
+    verify(
+        $kioskRetryResult['result'] === 'PASS'
+        && $kioskRetryResult['scenario'] === 'kiosk'
+        && $kioskRetryResult['exchange_count'] === 6
+        && $kioskRetryResult['recovered_stages'] === [
+            'auth', 'order', 'payment-key-kiosk', 'kiosk-payment', 'auth', 'kiosk-payment-retry',
+        ],
+        'Synthetic Kiosk retry recovery did not derive the accepted six-stage sequence.',
+    );
+    $kioskRetryArtifactPath = $kioskRetryResult['artifact']['path'];
+    $kioskRetrySnapshot = $validateRecoveryArtifact($kioskRetryResult, 'kiosk', basename($kioskRetryDirectory));
+    foreach ($kioskRetryResult['report']['exchanges'] as $exchange) {
+        verify(
+            $exchange['http_status'] === null && $exchange['transport_ok'] === null
+            && $exchange['metadata_source'] === 'unavailable_from_retained_raw',
+            'Kiosk retry recovery inferred HTTP status or unavailable runtime metadata.',
+        );
+    }
+    verify(
+        $kioskRetrySnapshot['bytes'] === $kioskRetryResult['artifact']['bytes']
+        && hash_equals($kioskRetryResult['artifact']['sha256'], $kioskRetrySnapshot['sha256'])
+        && $kioskRetrySourceSnapshot === $snapshotSourceRun($kioskRetryDirectory),
+        'Kiosk retry artifact read-back or retained-source verification failed.',
+    );
+    echo "PASS synthetic Kiosk retry classification without inferred HTTP status\n";
+
+    $kioskMismatchedPaymentKeyRequest = $kioskPaymentKeyExchange[1];
+    $kioskMismatchedPaymentKeyRequest['integration_id'] = $kioskIntegrationId + 1;
+    $kioskMismatchedIntegrationDirectory = $makeKioskRecoveryDirectory('mismatched-integration');
+    $writeKioskRecoveryRun($kioskMismatchedIntegrationDirectory, [
+        $kioskAuthExchange,
+        $kioskOrderExchange,
+        [
+            $kioskPaymentKeyExchange[0],
+            $kioskMismatchedPaymentKeyRequest,
+            $kioskPaymentKeyExchange[2],
+        ],
+    ]);
+    $kioskMismatchedResult = RetainedRunRecovery::recover(
+        $syntheticKioskConfigDirectory,
+        $kioskMismatchedIntegrationDirectory,
+        'kiosk',
+    );
+    if (is_string($kioskMismatchedResult['failure_artifact']['path'] ?? null)) {
+        $unexpectedRecoveryFailureArtifactPaths[] = $kioskMismatchedResult['failure_artifact']['path'];
+    }
+    verify(
+        $kioskMismatchedResult['result'] === 'FAIL'
+        && $kioskMismatchedResult['scenario'] === 'kiosk'
+        && is_array($kioskMismatchedResult['failure_artifact'] ?? null)
+        && is_string($kioskMismatchedResult['failure_artifact']['path'] ?? null),
+        'Kiosk recovery accepted a Payment Key request for a different integration.',
+    );
+    $kioskMismatchFailureBytes = file_get_contents($kioskMismatchedResult['failure_artifact']['path']);
+    verify(is_string($kioskMismatchFailureBytes), 'Kiosk mismatch failure artifact could not be read back.');
+    $kioskMismatchFailure = json_decode(
+        $kioskMismatchFailureBytes,
+        true,
+        512,
+        JSON_THROW_ON_ERROR,
+    );
+    verify(
+        is_array($kioskMismatchFailure) && $kioskMismatchFailure['scenario'] === 'kiosk',
+        'Kiosk durable failure artifact omitted the selected scenario.',
+    );
+
+    $malformedKioskPayRequest = $kioskRequestDTO->toArray($kioskAuthToken);
+    unset($malformedKioskPayRequest['auth_token']);
+    $malformedKioskDirectory = $makeKioskRecoveryDirectory('malformed-pay');
+    $writeKioskRecoveryRun($malformedKioskDirectory, [
+        $kioskAuthExchange,
+        $kioskOrderExchange,
+        $kioskPaymentKeyExchange,
+        [
+            $kioskPaymentExchange[0],
+            $malformedKioskPayRequest,
+            $syntheticKioskResponse,
+        ],
+    ]);
+    $malformedKioskResult = RetainedRunRecovery::recover(
+        $syntheticKioskConfigDirectory,
+        $malformedKioskDirectory,
+        'kiosk',
+    );
+    if (is_string($malformedKioskResult['failure_artifact']['path'] ?? null)) {
+        $unexpectedRecoveryFailureArtifactPaths[] = $malformedKioskResult['failure_artifact']['path'];
+    }
+    verify(
+        $malformedKioskResult['result'] === 'FAIL'
+        && $malformedKioskResult['scenario'] === 'kiosk',
+        'Kiosk recovery guessed the stage of a structurally incomplete pay request.',
+    );
+    echo "PASS Kiosk integration matching, structural fail-closed behavior, and scenario-aware failure artifacts\n";
+
     $syntheticRecoveryFailureDirectory = $privateNamespace . DIRECTORY_SEPARATOR . 'run-self-check-failure-' . bin2hex(random_bytes(6));
     verify(mkdir($syntheticRecoveryFailureDirectory, 0700), 'Synthetic post-prime failure run could not be created.');
     chmod($syntheticRecoveryFailureDirectory, 0700);
@@ -1325,7 +1875,10 @@ JSON;
         $syntheticRecoveryFailureDirectory,
         'wallet',
     );
-    verify($recoveryFailure['result'] === 'FAIL', 'Synthetic post-prime semantic failure unexpectedly recovered.');
+    verify(
+        $recoveryFailure['result'] === 'FAIL' && $recoveryFailure['scenario'] === 'wallet',
+        'Synthetic post-prime Wallet failure unexpectedly recovered or lost its selected scenario.',
+    );
     verify($recoveryFailure['source_raw_retained'] === true, 'Failed recovery did not retain its source run.');
     verify(
         is_array($recoveryFailure['failure_artifact']) && $recoveryFailure['failure_artifact']['path'] !== '',
@@ -1355,7 +1908,9 @@ JSON;
     ]);
     $recoveryFailureReport = json_decode($recoveryFailureBytes, true, 512, JSON_THROW_ON_ERROR);
     verify(
-        is_array($recoveryFailureReport) && !$recoveryFailureSanitizer->containsSensitiveValues($recoveryFailureReport),
+        is_array($recoveryFailureReport)
+        && $recoveryFailureReport['scenario'] === 'wallet'
+        && !$recoveryFailureSanitizer->containsSensitiveValues($recoveryFailureReport),
         'Recovery failure artifact failed JSON or configured-secret leak-guard verification.',
     );
     $failureSourceAfter = [];
@@ -1388,6 +1943,7 @@ JSON;
         $recoveryArtifactPathB,
         $recoveryFailureArtifactPath,
     ];
+    $selfCheckArtifactPaths = array_merge($selfCheckArtifactPaths, $kioskRecoveryArtifactPaths);
     if ($legacyRecoverySentinelOwned && $legacyRecoveryArtifactPath !== null) {
         $selfCheckArtifactPaths[] = $legacyRecoveryArtifactPath;
     }
@@ -1443,6 +1999,23 @@ JSON;
             $failure ??= new RuntimeException('Synthetic incomplete retained-run directory cleanup failed.');
         }
     }
+    foreach ($syntheticKioskRecoveryDirectories as $syntheticKioskRecoveryDirectory) {
+        if (!is_dir($syntheticKioskRecoveryDirectory)) {
+            continue;
+        }
+        foreach (scandir($syntheticKioskRecoveryDirectory) ?: [] as $fileName) {
+            if ($fileName === '.' || $fileName === '..') {
+                continue;
+            }
+            $path = $syntheticKioskRecoveryDirectory . DIRECTORY_SEPARATOR . $fileName;
+            if (is_file($path) && !is_link($path) && !unlink($path)) {
+                $failure ??= new RuntimeException('Synthetic Kiosk retained-run cleanup failed.');
+            }
+        }
+        if (is_dir($syntheticKioskRecoveryDirectory) && !rmdir($syntheticKioskRecoveryDirectory)) {
+            $failure ??= new RuntimeException('Synthetic Kiosk retained-run directory cleanup failed.');
+        }
+    }
     if ($syntheticRecoveryConfigDirectory !== null && is_file($syntheticRecoveryConfigDirectory . DIRECTORY_SEPARATOR . '.env')) {
         if (!unlink($syntheticRecoveryConfigDirectory . DIRECTORY_SEPARATOR . '.env')) {
             $failure ??= new RuntimeException('Synthetic recovery configuration cleanup failed.');
@@ -1451,6 +2024,16 @@ JSON;
     if ($syntheticRecoveryConfigDirectory !== null && is_dir($syntheticRecoveryConfigDirectory)
         && !rmdir($syntheticRecoveryConfigDirectory)) {
         $failure ??= new RuntimeException('Synthetic recovery configuration directory cleanup failed.');
+    }
+    if ($syntheticKioskConfigDirectory !== null
+        && is_file($syntheticKioskConfigDirectory . DIRECTORY_SEPARATOR . '.env')) {
+        if (!unlink($syntheticKioskConfigDirectory . DIRECTORY_SEPARATOR . '.env')) {
+            $failure ??= new RuntimeException('Synthetic Kiosk configuration cleanup failed.');
+        }
+    }
+    if ($syntheticKioskConfigDirectory !== null && is_dir($syntheticKioskConfigDirectory)
+        && !rmdir($syntheticKioskConfigDirectory)) {
+        $failure ??= new RuntimeException('Synthetic Kiosk configuration directory cleanup failed.');
     }
 }
 

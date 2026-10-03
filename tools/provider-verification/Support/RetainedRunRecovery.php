@@ -13,6 +13,10 @@ final class RetainedRunRecovery
 {
     private string $stage = 'preflight';
 
+    private string $scenario = 'unsupported';
+
+    private int $kioskPaymentAttemptCount = 0;
+
     private ?string $sourceDirectory = null;
 
     private ?SemanticSanitizer $sanitizer = null;
@@ -34,6 +38,7 @@ final class RetainedRunRecovery
     public static function recover(string $repositoryRoot, string $sourceDirectory, string $scenario): array
     {
         $recovery = new self();
+        $recovery->scenario = in_array($scenario, ['wallet', 'kiosk'], true) ? $scenario : 'unsupported';
         try {
             return $recovery->recoverValidated($repositoryRoot, $sourceDirectory, $scenario);
         } catch (Throwable $exception) {
@@ -44,8 +49,8 @@ final class RetainedRunRecovery
     private function recoverValidated(string $repositoryRoot, string $sourceDirectory, string $scenario): array
     {
         $this->stage = 'path-validation';
-        if ($scenario !== 'wallet') {
-            throw new RuntimeException('Only the wallet recovery scenario is currently supported.');
+        if (!in_array($scenario, ['wallet', 'kiosk'], true)) {
+            throw new RuntimeException('The retained-run recovery scenario is not supported.');
         }
         if (!$this->isAbsolutePath($sourceDirectory) || is_link($sourceDirectory)) {
             throw new RuntimeException('The retained run path must be an absolute non-symlink directory.');
@@ -73,11 +78,19 @@ final class RetainedRunRecovery
         $this->sourceDirectory = $runRealPath;
 
         $this->stage = 'configuration';
-        $config = VerificationConfig::load($repositoryRealPath, 'wallet');
-        if ($config->walletIntegrationId === null || $config->walletTestMsisdn === null) {
+        $config = VerificationConfig::load($repositoryRealPath, $scenario);
+        if ($scenario === 'wallet'
+            && ($config->walletIntegrationId === null || $config->walletTestMsisdn === null)) {
             throw new RuntimeException('Wallet recovery configuration is incomplete.');
         }
-        $this->sanitizer = new SemanticSanitizer($config->configuredSecrets(), $config->walletTestMsisdn);
+        if ($scenario === 'kiosk' && $config->kioskIntegrationId === null) {
+            throw new RuntimeException('Kiosk recovery configuration is incomplete.');
+        }
+        $integrationId = $scenario === 'wallet' ? $config->walletIntegrationId : $config->kioskIntegrationId;
+        $this->sanitizer = new SemanticSanitizer(
+            $config->configuredSecrets(),
+            $scenario === 'wallet' ? $config->walletTestMsisdn : null,
+        );
 
         $this->stage = 'raw-file-discovery';
         $this->discoverTriplets();
@@ -95,7 +108,7 @@ final class RetainedRunRecovery
                 throw new RuntimeException('A retained request URL is empty or invalid.');
             }
 
-            $stage = $this->deriveStage($urlBytes, $request, (string)$config->walletIntegrationId);
+            $stage = $this->deriveStage($urlBytes, $request, $scenario, (string)$integrationId);
             $decoded[] = [
                 'sequence' => (int)$sequence,
                 'stage' => $stage,
@@ -202,7 +215,7 @@ final class RetainedRunRecovery
                 'source_run' => basename($this->sourceDirectory),
                 'source_raw_directory' => $this->sourceDirectory,
                 'recovered_at' => gmdate('c'),
-                'scenario' => 'wallet',
+                'scenario' => $scenario,
                 'exchange_count' => count($exchanges),
                 'source_raw_retained' => true,
             ],
@@ -218,7 +231,7 @@ final class RetainedRunRecovery
 
         $this->stage = 'artifact-persistence';
         $artifactName = basename($this->sourceDirectory)
-            . '-recovered-wallet-' . gmdate('Ymd\\THis\\Z')
+            . '-recovered-' . $scenario . '-' . gmdate('Ymd\\THis\\Z')
             . '-' . bin2hex(random_bytes(8)) . '.json';
         $artifact = CaptureSession::persistJsonArtifact($report, $artifactName);
         $readBack = file_get_contents($artifact['path']);
@@ -236,7 +249,7 @@ final class RetainedRunRecovery
 
         return [
             'result' => 'PASS',
-            'scenario' => 'wallet',
+            'scenario' => $scenario,
             'source_run' => basename($this->sourceDirectory),
             'source_directory' => $this->sourceDirectory,
             'exchange_count' => count($exchanges),
@@ -329,7 +342,7 @@ final class RetainedRunRecovery
         return $contents;
     }
 
-    private function deriveStage(string $url, mixed $request, string $walletIntegrationId): string
+    private function deriveStage(string $url, mixed $request, string $scenario, string $integrationId): string
     {
         if (!$request instanceof stdClass) {
             throw new RuntimeException('A retained request body is not a JSON object.');
@@ -348,10 +361,25 @@ final class RetainedRunRecovery
         }
         if ($path === '/api/acceptance/payment_keys'
             && property_exists($request, 'integration_id')
-            && (string)$request->integration_id === $walletIntegrationId) {
-            return 'payment-key-wallet';
+            && (string)$request->integration_id === $integrationId) {
+            return $scenario === 'kiosk' ? 'payment-key-kiosk' : 'payment-key-wallet';
         }
-        if ($path === '/api/acceptance/payments/pay'
+        if ($scenario === 'kiosk'
+            && $path === '/api/acceptance/payments/pay'
+            && isset($request->source) && $request->source instanceof stdClass
+            && ($request->source->identifier ?? null) === 'AGGREGATOR'
+            && ($request->source->subtype ?? null) === 'AGGREGATOR'
+            && property_exists($request, 'payment_token')
+            && property_exists($request, 'auth_token')) {
+            $this->kioskPaymentAttemptCount++;
+            return match ($this->kioskPaymentAttemptCount) {
+                1 => 'kiosk-payment',
+                2 => 'kiosk-payment-retry',
+                default => throw new RuntimeException('The retained run contains too many Kiosk payment attempts.'),
+            };
+        }
+        if ($scenario === 'wallet'
+            && $path === '/api/acceptance/payments/pay'
             && isset($request->source) && $request->source instanceof stdClass
             && isset($request->source->subtype) && $request->source->subtype === 'WALLET') {
             return property_exists($request, 'auth_token')
@@ -400,6 +428,7 @@ final class RetainedRunRecovery
         $safeMessage = 'Offline retained-run recovery failed during ' . $this->stage . '.';
         $diagnostic = [
             'result' => 'FAIL',
+            'scenario' => $this->scenario,
             'failing_stage' => $this->stage,
             'exception_class' => get_class($exception),
             'exception_message' => $this->sanitizer?->sanitizeDiagnostic($safeMessage) ?? $safeMessage,
@@ -428,7 +457,7 @@ final class RetainedRunRecovery
 
             return [
                 'result' => 'FAIL',
-                'scenario' => 'wallet',
+                'scenario' => $this->scenario,
                 'source_run' => $this->sourceDirectory === null ? null : basename($this->sourceDirectory),
                 'source_directory' => $this->sourceDirectory,
                 'exchange_count' => count($this->filesBySequence),
@@ -442,7 +471,7 @@ final class RetainedRunRecovery
         } catch (Throwable) {
             return [
                 'result' => 'FAIL',
-                'scenario' => 'wallet',
+                'scenario' => $this->scenario,
                 'source_run' => $this->sourceDirectory === null ? null : basename($this->sourceDirectory),
                 'source_directory' => $this->sourceDirectory,
                 'exchange_count' => count($this->filesBySequence),
