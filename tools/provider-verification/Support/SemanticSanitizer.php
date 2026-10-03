@@ -94,6 +94,10 @@ final class SemanticSanitizer
         }
 
         if (is_int($value) || is_float($value)) {
+            if ($this->isPhoneCollectionElement($path)) {
+                return is_float($value) ? 20000000000.0 : 20000000000;
+            }
+
             if ($this->isIdKey($key, $value)) {
                 return $this->mapId($value, $path);
             }
@@ -118,6 +122,10 @@ final class SemanticSanitizer
 
         if (!is_string($value)) {
             return $value;
+        }
+
+        if ($this->isPhoneCollectionElement($path)) {
+            return '+20000000000';
         }
 
         if ($this->isIdKey($key, $value)) {
@@ -655,6 +663,15 @@ final class SemanticSanitizer
         string|int|float $raw,
         mixed $safe,
     ): bool {
+        if ($this->isPhoneCollectionElement($path)) {
+            if (is_string($raw)) {
+                return $safe === '+20000000000';
+            }
+
+            $expected = is_float($raw) ? 20000000000.0 : 20000000000;
+            return $safe === $expected;
+        }
+
         if ($this->isSensitiveKey($key)) {
             $expected = is_string($raw) ? '<REDACTED_SECRET>' : $this->redactedNumber($raw);
             return $safe === $expected;
@@ -688,7 +705,10 @@ final class SemanticSanitizer
 
     private function isContextualPiiKey(string $key, string $path): bool
     {
-        return $this->isNameKey($key, $path) || $this->isAddressKey($key, $path) || $this->isIpKey($key);
+        return $this->isPhoneCollectionElement($path)
+            || $this->isNameKey($key, $path)
+            || $this->isAddressKey($key, $path)
+            || $this->isIpKey($key);
     }
 
     private function redactedNumber(int|float $value): int|float
@@ -822,11 +842,17 @@ final class SemanticSanitizer
         ], true) || (bool)preg_match('/(^|_)(phone|mobile|msisdn)$/i', $key);
     }
 
+    /** Identify a scalar whose direct parent is the explicit phones list. */
+    private function isPhoneCollectionElement(string $path): bool
+    {
+        return preg_match('/\.phones\[\d+\]$/i', $path) === 1;
+    }
+
     private function isNameKey(string $key, string $path): bool
     {
         $lower = strtolower($key);
         if (in_array($lower, [
-            'first_name', 'last_name', 'full_name', 'customer_name', 'owner_name', 'username',
+            'first_name', 'last_name', 'full_name', 'customer_name', 'owner_name', 'username', 'sms_sender_name',
             'company', 'company_name', 'merchant_name', 'business', 'business_name', 'brand_name', 'legal_name',
         ], true)) {
             return true;

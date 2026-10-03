@@ -230,6 +230,109 @@ JSON;
     );
     echo "PASS PII redaction and public wallet test input handling\n";
 
+    $rawPhoneCollections = json_decode(
+        '{"profile":{"phones":["synthetic-profile-private-phone-zero","synthetic-profile-private-phone-index-one",null,false,1234567890,12345.5,"01010101010",""]},'
+        . '"merchant":{"phones":["synthetic-merchant-private-phone-zero","synthetic-merchant-private-phone-index-one",null]},'
+        . '"unrelated_values":["unrelated semantic value 123","release 1 is ready"],'
+        . '"source":{"identifier":"01010101010"}}',
+        false,
+        512,
+        JSON_THROW_ON_ERROR,
+    );
+    $phoneCollectionSanitizer = new SemanticSanitizer([], '01010101010');
+    $phoneCollectionSanitizer->prime([$rawPhoneCollections]);
+    $safePhoneCollections = $phoneCollectionSanitizer->sanitize($rawPhoneCollections);
+    $safePhoneCollectionJson = json_encode($safePhoneCollections, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+    verify(
+        $phoneCollectionSanitizer->sameShape($rawPhoneCollections, $safePhoneCollections),
+        'Phone collection sanitization changed JSON shape, scalar types, or ordering.',
+    );
+    verify(
+        $safePhoneCollections->profile->phones === [
+            '+20000000000', '+20000000000', null, false, 20000000000, 20000000000.0, '+20000000000', '+20000000000',
+        ]
+        && $safePhoneCollections->merchant->phones === ['+20000000000', '+20000000000', null],
+        'Profile or merchant phones collection did not preserve positions while redacting scalar elements.',
+    );
+    verify(
+        count($safePhoneCollections->profile->phones) === count($rawPhoneCollections->profile->phones)
+        && count($safePhoneCollections->merchant->phones) === count($rawPhoneCollections->merchant->phones),
+        'Phone collection sanitization changed list cardinality.',
+    );
+    verify(
+        $safePhoneCollections->unrelated_values === $rawPhoneCollections->unrelated_values,
+        'An unrelated string list was treated as a phone collection.',
+    );
+    verify(
+        $safePhoneCollections->source->identifier === '01010101010'
+        && $safePhoneCollections->profile->phones[6] === '+20000000000',
+        'The public Wallet test exception escaped source.identifier into phones[].',
+    );
+    foreach ([
+        'synthetic-profile-private-phone-zero',
+        'synthetic-profile-private-phone-index-one',
+        'synthetic-merchant-private-phone-zero',
+        'synthetic-merchant-private-phone-index-one',
+    ] as $rawPhone) {
+        verify(!str_contains($safePhoneCollectionJson, $rawPhone), 'A raw phones[] value remains after sanitization.');
+    }
+    verify(
+        $phoneCollectionSanitizer->sensitiveFieldDifferences($rawPhoneCollections, $safePhoneCollections) === [],
+        'Sensitive-field validation rejected canonical phones[] replacements.',
+    );
+    $unsafePhoneCollections = clone $safePhoneCollections;
+    $unsafePhoneCollections->profile = clone $safePhoneCollections->profile;
+    $unsafePhoneCollections->profile->phones[1] = $rawPhoneCollections->profile->phones[1];
+    verify(
+        $phoneCollectionSanitizer->sensitiveFieldDifferences($rawPhoneCollections, $unsafePhoneCollections)
+            === ['$.profile.phones[1]'],
+        'Sensitive-field validation did not recognize the numeric child key at profile.phones[1].',
+    );
+    $unsafePhoneCollections->profile->phones[1] = '<SANITIZED_PHONE>';
+    verify(
+        $phoneCollectionSanitizer->sensitiveFieldDifferences($rawPhoneCollections, $unsafePhoneCollections)
+            === ['$.profile.phones[1]'],
+        'Sensitive-field validation accepted a noncanonical phones[] replacement.',
+    );
+    echo "PASS profile/merchant phones[] contextual redaction, index 1 validation, shape, and public-test path isolation\n";
+
+    $rawSenderName = json_decode(
+        '{"profile":{"sms_sender_name":"synthetic-private-sms-sender"},'
+        . '"semantic_name":"WalletPayment","nickname":"Keep this nickname",'
+        . '"items":[{"name":"Synthetic wallet item"}]}',
+        false,
+        512,
+        JSON_THROW_ON_ERROR,
+    );
+    $senderNameSanitizer = new SemanticSanitizer();
+    $senderNameSanitizer->prime([$rawSenderName]);
+    $safeSenderName = $senderNameSanitizer->sanitize($rawSenderName);
+    verify($senderNameSanitizer->sameShape($rawSenderName, $safeSenderName), 'Sender-name sanitization changed JSON shape.');
+    verify(
+        $safeSenderName->profile->sms_sender_name === '<SANITIZED_NAME>'
+        && $safeSenderName->semantic_name === 'WalletPayment'
+        && $safeSenderName->nickname === 'Keep this nickname'
+        && $safeSenderName->items[0]->name === 'Synthetic wallet item',
+        'Explicit sms_sender_name classification changed an unrelated name-like semantic field.',
+    );
+    verify(
+        !str_contains(json_encode($safeSenderName, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR), 'synthetic-private-sms-sender'),
+        'Raw sms_sender_name remains after sanitization.',
+    );
+    verify(
+        $senderNameSanitizer->sensitiveFieldDifferences($rawSenderName, $safeSenderName) === [],
+        'Sensitive-field validation rejected the canonical sms_sender_name replacement.',
+    );
+    $unsafeSenderName = clone $safeSenderName;
+    $unsafeSenderName->profile = clone $safeSenderName->profile;
+    $unsafeSenderName->profile->sms_sender_name = $rawSenderName->profile->sms_sender_name;
+    verify(
+        $senderNameSanitizer->sensitiveFieldDifferences($rawSenderName, $unsafeSenderName)
+            === ['$.profile.sms_sender_name'],
+        'Sensitive-field validation did not recognize the explicit sms_sender_name field.',
+    );
+    echo "PASS explicit sms_sender_name redaction and narrow name classification\n";
+
     verify($safe->token !== $raw->token, 'Provider token was not replaced.');
     verify($safe->auth_token !== 'synthetic-auth-token-value', 'Auth token was not replaced.');
     verify($safe->payment_token !== 'synthetic-payment-token-value', 'Payment token was not replaced.');
@@ -793,12 +896,12 @@ JSON;
         [
             'https://accept.paymob.com/api/auth/tokens',
             '{"api_key":"recovery-self-check-api-secret"}',
-            '{"token":"recovery-self-check-auth-token","profile":{"id":456789,"email":"recovery-person@example.org"},"issued_at":"2026-10-03T10:00:00Z"}',
+            '{"token":"recovery-self-check-auth-token","profile":{"id":456789,"email":"recovery-person@example.org","phones":["synthetic-profile-private-phone-zero","synthetic-profile-private-phone-index-one",null],"sms_sender_name":"synthetic-private-sms-sender"},"issued_at":"2026-10-03T10:00:00Z"}',
         ],
         [
             'https://accept.paymob.com/api/ecommerce/orders',
             '{"amount_cents":15000,"currency":"EGP","merchant_order_id":"recovery-private-order-ref","items":[{"name":"Synthetic wallet order","amount_cents":15000,"quantity":1}]}',
-            '{"id":123456,"merchant_order_id":"recovery-private-order-ref","payment_status":"UNPAID","created_at":"2026-10-03T10:01:00Z"}',
+            '{"id":123456,"merchant_order_id":"recovery-private-order-ref","merchant":{"id":345678,"phones":["synthetic-merchant-private-phone-zero","synthetic-merchant-private-phone-index-one",null]},"payment_status":"UNPAID","created_at":"2026-10-03T10:01:00Z"}',
         ],
         [
             'https://accept.paymob.com/api/acceptance/payment_keys',
@@ -970,6 +1073,17 @@ JSON;
     );
     $recoveredWallet = $recoveryReport['exchanges'][3];
     $recoveredPaymentKey = $recoveryReport['exchanges'][2];
+    $recoveredAuthProfile = $recoveryReport['exchanges'][0]['sanitized_response_fixture_candidate']['profile'];
+    $recoveredOrderMerchant = $recoveryReport['exchanges'][1]['sanitized_response_fixture_candidate']['merchant'];
+    verify(
+        $recoveredAuthProfile['phones'] === ['+20000000000', '+20000000000', null]
+        && $recoveredAuthProfile['sms_sender_name'] === '<SANITIZED_NAME>',
+        'Persisted synthetic auth response did not safely redact profile phones or sms_sender_name.',
+    );
+    verify(
+        $recoveredOrderMerchant['phones'] === ['+20000000000', '+20000000000', null],
+        'Persisted synthetic order response did not safely redact merchant phones.',
+    );
     verify($recoveredWallet['method'] === null, 'Recovery invented an unavailable request method.');
     foreach (['http_status', 'transport_ok', 'curl_errno', 'curl_error', 'request_header_names', 'response_header_names'] as $unavailableField) {
         verify($recoveredWallet[$unavailableField] === null, 'Recovery invented unavailable runtime metadata.');
@@ -1069,6 +1183,39 @@ JSON;
         'Recovery omitted leak-guard or referential-consistency evidence.',
     );
     $recoveryArtifactBytes = $recoveryArtifactSnapshot['contents'];
+    $publicWalletPaths = [];
+    $collectPublicWalletPaths = static function (mixed $value, string $path = '$') use (&$collectPublicWalletPaths, &$publicWalletPaths): void {
+        if ($value instanceof stdClass) {
+            foreach ($value as $key => $child) {
+                $collectPublicWalletPaths($child, $path . '.' . (string)$key);
+            }
+
+            return;
+        }
+
+        if (is_array($value)) {
+            foreach ($value as $key => $child) {
+                $childPath = array_is_list($value) ? $path . '[' . $key . ']' : $path . '.' . (string)$key;
+                $collectPublicWalletPaths($child, $childPath);
+            }
+
+            return;
+        }
+
+        if ($value === '01010101010') {
+            $publicWalletPaths[] = $path;
+        }
+    };
+    $collectPublicWalletPaths($recoveryReport);
+    verify(
+        count($publicWalletPaths) === 2
+        && array_reduce(
+            $publicWalletPaths,
+            static fn(bool $safe, string $path): bool => $safe && str_ends_with($path, '.source.identifier'),
+            true,
+        ),
+        'The public Wallet test number appeared outside approved source.identifier paths in the recovery artifact.',
+    );
     foreach ([
         'recovery-self-check-api-secret',
         'recovery-self-check-hmac-secret',
@@ -1080,6 +1227,11 @@ JSON;
         'recovery-merchant-transaction-reference',
         'synthetic-private-upg-reference',
         'recovery-person@example.org',
+        'synthetic-profile-private-phone-zero',
+        'synthetic-profile-private-phone-index-one',
+        'synthetic-merchant-private-phone-zero',
+        'synthetic-merchant-private-phone-index-one',
+        'synthetic-private-sms-sender',
     ] as $sensitiveLiteral) {
         verify(!str_contains($recoveryArtifactBytes, $sensitiveLiteral), 'Recovery artifact contains a synthetic secret or PII literal.');
     }
