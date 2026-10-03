@@ -18,8 +18,10 @@ use Maatify\Paymob\ProviderVerification\Support\ProviderAttemptStageClassifier;
 use Maatify\Paymob\ProviderVerification\Support\RetainedRunRecovery;
 use Maatify\Paymob\ProviderVerification\Support\SemanticSanitizer;
 use Maatify\Paymob\ProviderVerification\Support\VerificationConfig;
+use Maatify\Paymob\ProviderVerification\Support\VerificationContext;
 
 require_once __DIR__ . '/Support/CapturingApiClient.php';
+require_once __DIR__ . '/Support/VerificationContext.php';
 
 function verify(bool $condition, string $message): void
 {
@@ -39,6 +41,8 @@ $recoveryArtifactPathB = null;
 $recoveryFailureArtifactPath = null;
 $kioskRecoveryArtifactPaths = [];
 $syntheticKioskRecoveryDirectories = [];
+$cardRecoveryArtifactPaths = [];
+$syntheticCardRecoveryDirectories = [];
 $syntheticKioskConfigDirectory = null;
 $syntheticPaymentKeyConfigDirectory = null;
 $legacyRecoveryArtifactPath = null;
@@ -1173,6 +1177,7 @@ JSON;
         array $recovery,
         string $scenario,
         string $sourceIdentity,
+        ?string $paymentMethod = null,
     ) use ($repositoryPath, $snapshotFile): array {
         $artifact = $recovery['artifact'] ?? null;
         verify(is_array($artifact) && is_string($artifact['path'] ?? null), 'Successful recovery omitted its artifact path.');
@@ -1186,9 +1191,10 @@ JSON;
             && dirname($realPath) === $directory,
             'Successful recovery artifact is not a regular non-symlink file.',
         );
+        $artifactIdentity = $paymentMethod === null ? $scenario : $scenario . '-' . $paymentMethod;
         verify(
             preg_match(
-                '/^' . preg_quote($sourceIdentity, '/') . '-recovered-' . preg_quote($scenario, '/')
+                '/^' . preg_quote($sourceIdentity, '/') . '-recovered-' . preg_quote($artifactIdentity, '/')
                 . '-\\d{8}T\\d{6}Z-[a-f0-9]{16}\\.json$/D',
                 basename($realPath),
             ) === 1,
@@ -1679,7 +1685,7 @@ JSON;
 
         return $directory;
     };
-    $writeKioskRecoveryRun = static function (string $directory, array $exchanges): void {
+    $writeRecoveryRun = static function (string $directory, array $exchanges): void {
         foreach ($exchanges as $index => [$url, $request, $response]) {
             $prefix = str_pad((string)($index + 1), 4, '0', STR_PAD_LEFT);
             $requestBody = is_string($request) ? $request : json_encode($request, JSON_THROW_ON_ERROR);
@@ -1692,7 +1698,7 @@ JSON;
                 $path = $directory . DIRECTORY_SEPARATOR . $fileName;
                 verify(
                     file_put_contents($path, $contents, LOCK_EX) === strlen($contents),
-                    'Synthetic Kiosk raw exchange file could not be written.',
+                    'Synthetic retained-run exchange file could not be written.',
                 );
                 chmod($path, 0600);
             }
@@ -1871,6 +1877,348 @@ JSON;
         'Shared classifier did not accept retained JSON object request input.',
     );
     echo "PASS Auth, Order, Payment Key card/kiosk/wallet, and array/object input classification\n";
+
+    $cardApiKey = 'classifier-self-check-api-key';
+    $cardAuthToken = 'synthetic-card-private-auth-token';
+    $cardRefreshedAuthToken = 'synthetic-card-private-refreshed-auth-token';
+    $cardPaymentToken = 'synthetic-card-private-payment-key-token';
+    $cardRetryPaymentToken = 'synthetic-card-private-retry-payment-key-token';
+    $cardMerchantReference = 'synthetic-card-private-merchant-order-reference';
+    $cardOtherReference = 'synthetic-card-private-other-endpoint-reference';
+    $cardOrderId = 123456;
+    $cardAccountId = 456789;
+    $cardBilling = new BillingDataDTO(
+        firstName: 'Private Card Given',
+        lastName: 'Private Card Family',
+        email: 'private-card-person@example.org',
+        phoneNumber: '+201234567890',
+        country: 'NA',
+        city: 'Private Card City',
+        street: 'Private Card Street',
+        building: '77',
+        floor: '2',
+        apartment: '4',
+        postalCode: '12345',
+        state: 'Private Card State',
+    );
+    $cardPaymentKeyRequestDTO = new PaymentKeyRequestDTO(
+        orderId: $cardOrderId,
+        integrationId: (int)$cardIntegrationId,
+        amountCents: 15000,
+        currency: CurrencyEnum::EGP,
+        billingData: $cardBilling,
+        expirationMinutes: 180,
+    );
+    $cardPaymentKeyRequest = $cardPaymentKeyRequestDTO->toArray($cardAuthToken);
+    verify(
+        array_diff([
+            'auth_token', 'order_id', 'integration_id', 'amount_cents', 'currency', 'expiration', 'billing_data',
+        ], array_keys($cardPaymentKeyRequest)) === []
+        && $cardPaymentKeyRequest['integration_id'] === $cardIntegrationId,
+        'Synthetic Card Payment Key request is incomplete or did not select its configured integration.',
+    );
+    $cardAuthExchange = [
+        $authUrl,
+        ['api_key' => $cardApiKey],
+        [
+            'token' => $cardAuthToken,
+            'profile' => ['id' => $cardAccountId, 'email' => 'private-card-person@example.org'],
+        ],
+    ];
+    $cardOrderExchange = [
+        $orderUrl,
+        $makeSyntheticOrderRequest($cardAuthToken, $cardMerchantReference),
+        [
+            'id' => $cardOrderId,
+            'merchant_order_id' => $cardMerchantReference,
+            'other_endpoint_reference' => $cardOtherReference,
+            'payment_status' => 'UNPAID',
+        ],
+    ];
+    $cardPaymentKeyExchange = [
+        $paymentKeyUrl,
+        $cardPaymentKeyRequest,
+        [
+            'token' => $cardPaymentToken,
+            'order' => $cardOrderId,
+            'integration_id' => $cardIntegrationId,
+            'currency' => 'EGP',
+            'status' => 'issued',
+        ],
+    ];
+    $cardNormalExchanges = [$cardAuthExchange, $cardOrderExchange, $cardPaymentKeyExchange];
+    $cardNormalLiveStages = $classifyWithCapturingClient($cardPaymentKeyConfigDTO, $cardNormalExchanges);
+    verify(
+        $cardNormalLiveStages === ['auth', 'order', 'payment-key-card']
+        && $cardOrderExchange[1]['auth_token'] === $cardAuthToken,
+        'Synthetic Card normal requests did not follow the DTO and shared live classifier contracts.',
+    );
+
+    $makeCardRecoveryDirectory = static function (string $label) use (
+        $privateNamespace,
+        &$syntheticCardRecoveryDirectories,
+    ): string {
+        $directory = $privateNamespace . DIRECTORY_SEPARATOR . 'run-self-check-card-'
+            . $label . '-' . bin2hex(random_bytes(6));
+        verify(mkdir($directory, 0700), 'Synthetic Card retained run could not be created.');
+        chmod($directory, 0700);
+        $syntheticCardRecoveryDirectories[] = $directory;
+
+        return $directory;
+    };
+    $recoverCard = static function (string $directory) use (
+        $syntheticPaymentKeyConfigDirectory,
+        &$cardRecoveryArtifactPaths,
+        &$unexpectedRecoveryFailureArtifactPaths,
+    ): array {
+        $result = RetainedRunRecovery::recover(
+            $syntheticPaymentKeyConfigDirectory,
+            $directory,
+            'payment-key',
+            'card',
+        );
+        if (is_string($result['artifact']['path'] ?? null)) {
+            $cardRecoveryArtifactPaths[] = $result['artifact']['path'];
+        }
+        if (is_string($result['failure_artifact']['path'] ?? null)) {
+            $unexpectedRecoveryFailureArtifactPaths[] = $result['failure_artifact']['path'];
+        }
+
+        return $result;
+    };
+
+    $cardNormalDirectory = $makeCardRecoveryDirectory('normal');
+    $writeRecoveryRun($cardNormalDirectory, $cardNormalExchanges);
+    $cardNormalSourceSnapshot = $snapshotSourceRun($cardNormalDirectory);
+    $cardNormalRecovery = $recoverCard($cardNormalDirectory);
+    verify(
+        $cardNormalRecovery['result'] === 'PASS'
+        && $cardNormalRecovery['scenario'] === 'payment-key'
+        && $cardNormalRecovery['payment_method'] === 'card'
+        && $cardNormalRecovery['recovered_stages'] === $cardNormalLiveStages
+        && $cardNormalRecovery['exchange_count'] === 3
+        && $cardNormalRecovery['source_raw_retained'] === true,
+        'Synthetic normal Card Payment Key recovery failed or lost its explicit identity/stages.',
+    );
+    $cardNormalSnapshot = $validateRecoveryArtifact(
+        $cardNormalRecovery,
+        'payment-key',
+        basename($cardNormalDirectory),
+        'card',
+    );
+    $cardReport = $cardNormalRecovery['report'];
+    verify(
+        $cardReport['source']['scenario'] === 'payment-key'
+        && $cardReport['source']['payment_method'] === 'card'
+        && $cardReport['leak_guard_result'] === 'PASS'
+        && $cardReport['referential_consistency_result'] === 'PASS',
+        'Card recovery report omitted explicit identity or sanitizer safety results.',
+    );
+
+    $cardSanitizer = new SemanticSanitizer([$cardApiKey]);
+    $cardRawValues = [];
+    foreach ($cardNormalExchanges as [$url, $request, $response]) {
+        $cardRawValues[] = $url;
+        $cardRawValues[] = json_decode(json_encode($request, JSON_THROW_ON_ERROR), false, 512, JSON_THROW_ON_ERROR);
+        $cardRawValues[] = json_decode(json_encode($response, JSON_THROW_ON_ERROR), false, 512, JSON_THROW_ON_ERROR);
+    }
+    $cardSanitizer->prime($cardRawValues);
+    foreach ($cardNormalExchanges as $index => [$url, $request, $response]) {
+        $rawRequest = $cardRawValues[$index * 3 + 1];
+        $rawResponse = $cardRawValues[$index * 3 + 2];
+        $safeRequest = json_decode(
+            json_encode($cardReport['exchanges'][$index]['sanitized_request'], JSON_THROW_ON_ERROR),
+            false,
+            512,
+            JSON_THROW_ON_ERROR,
+        );
+        $safeResponse = json_decode(
+            json_encode($cardReport['exchanges'][$index]['sanitized_response_fixture_candidate'], JSON_THROW_ON_ERROR),
+            false,
+            512,
+            JSON_THROW_ON_ERROR,
+        );
+        verify(
+            $cardSanitizer->sameShape($rawRequest, $safeRequest)
+            && $cardSanitizer->sameShape($rawResponse, $safeResponse)
+            && $cardSanitizer->semanticDifferences($rawRequest, $safeRequest) === []
+            && $cardSanitizer->semanticDifferences($rawResponse, $safeResponse) === []
+            && $cardSanitizer->sensitiveFieldDifferences($rawRequest, $safeRequest) === []
+            && $cardSanitizer->sensitiveFieldDifferences($rawResponse, $safeResponse) === [],
+            'Card recovery changed JSON shape or semantics, or retained sensitive fields.',
+        );
+    }
+    verify(!$cardSanitizer->containsSensitiveValues($cardReport), 'Card recovery failed the shared leak guard.');
+    $safeCardAuth = $cardReport['exchanges'][0]['sanitized_response_fixture_candidate'];
+    $safeCardOrderRequest = $cardReport['exchanges'][1]['sanitized_request'];
+    $safeCardOrderResponse = $cardReport['exchanges'][1]['sanitized_response_fixture_candidate'];
+    $safeCardPaymentKeyRequest = $cardReport['exchanges'][2]['sanitized_request'];
+    $safeCardPaymentKeyResponse = $cardReport['exchanges'][2]['sanitized_response_fixture_candidate'];
+    $safeCardBilling = $safeCardPaymentKeyRequest['billing_data'];
+    verify(
+        $safeCardOrderResponse['id'] === $safeCardPaymentKeyRequest['order_id']
+        && $safeCardPaymentKeyRequest['order_id'] === $safeCardPaymentKeyResponse['order']
+        && $safeCardOrderRequest['merchant_order_id'] === $safeCardOrderResponse['merchant_order_id']
+        && $safeCardOrderRequest['merchant_order_id'] !== $cardMerchantReference
+        && is_int($safeCardPaymentKeyRequest['integration_id'])
+        && $safeCardPaymentKeyRequest['integration_id'] === $safeCardPaymentKeyResponse['integration_id']
+        && $safeCardPaymentKeyRequest['integration_id'] !== $cardIntegrationId
+        && $safeCardAuth['profile']['id'] !== $safeCardOrderResponse['id']
+        && $safeCardOrderResponse['id'] !== $safeCardPaymentKeyRequest['integration_id']
+        && $safeCardOrderResponse['other_endpoint_reference'] !== $safeCardOrderResponse['merchant_order_id']
+        && $safeCardPaymentKeyResponse['token'] === '<REDACTED_SECRET>'
+        && $safeCardBilling['first_name'] === '<SANITIZED_NAME>'
+        && $safeCardBilling['last_name'] === '<SANITIZED_NAME>'
+        && $safeCardBilling['email'] === 'customer@example.test'
+        && $safeCardBilling['phone_number'] === '+20000000000'
+        && $safeCardBilling['street'] === '<SANITIZED_ADDRESS>'
+        && $safeCardBilling['city'] === '<SANITIZED_ADDRESS>'
+        && $safeCardBilling['state'] === '<SANITIZED_ADDRESS>'
+        && $safeCardBilling['postal_code'] === '<SANITIZED_ADDRESS>'
+        && $safeCardBilling['building'] !== '77'
+        && $safeCardBilling['floor'] !== '2'
+        && $safeCardBilling['apartment'] !== '4',
+        'Card recovery did not preserve distinct, type-safe Order/Integration/account/reference mappings or token secrecy.',
+    );
+    foreach ([
+        $cardApiKey, $cardAuthToken, $cardPaymentToken, $cardMerchantReference, $cardOtherReference,
+        'private-card-person@example.org', '+201234567890', 'Private Card Given', 'Private Card Family',
+        'Private Card City', 'Private Card Street', 'Private Card State',
+        (string)$cardOrderId, (string)$cardAccountId, (string)$cardIntegrationId,
+    ] as $cardPrivateLiteral) {
+        verify(
+            !str_contains($cardNormalSnapshot['contents'], $cardPrivateLiteral),
+            'Card recovery artifact retained a synthetic secret, PII, private reference, or ID.',
+        );
+    }
+    verify(
+        $cardNormalSourceSnapshot === $snapshotSourceRun($cardNormalDirectory),
+        'Normal Card recovery modified its synthetic retained source run.',
+    );
+    echo "PASS synthetic normal Card Payment Key recovery, sanitizer safety, and referential consistency\n";
+
+    $cardNormalRecoveryB = $recoverCard($cardNormalDirectory);
+    verify(
+        $cardNormalRecoveryB['result'] === 'PASS'
+        && $cardNormalRecoveryB['artifact']['path'] !== $cardNormalRecovery['artifact']['path'],
+        'Repeated Card recovery reused an existing artifact name.',
+    );
+    $cardNormalSnapshotB = $validateRecoveryArtifact(
+        $cardNormalRecoveryB,
+        'payment-key',
+        basename($cardNormalDirectory),
+        'card',
+    );
+    verify(
+        $cardNormalSnapshot === $snapshotFile($cardNormalRecovery['artifact']['path'])
+        && $cardNormalSnapshotB === $snapshotFile($cardNormalRecoveryB['artifact']['path'])
+        && $cardNormalSourceSnapshot === $snapshotSourceRun($cardNormalDirectory),
+        'Repeated Card recovery replaced an artifact or modified retained raw evidence.',
+    );
+    echo "PASS Card recovery unique non-replacing artifacts, verified bytes/hash, and owner-only permissions\n";
+
+    $cardRetryAuthExchange = [
+        $authUrl,
+        ['api_key' => $cardApiKey],
+        ['token' => $cardRefreshedAuthToken, 'profile' => ['id' => $cardAccountId]],
+    ];
+    $cardRetryExchanges = [
+        $cardAuthExchange,
+        $cardOrderExchange,
+        $cardPaymentKeyExchange,
+        $cardRetryAuthExchange,
+        [
+            $paymentKeyUrl,
+            $cardPaymentKeyRequestDTO->toArray($cardRefreshedAuthToken),
+            [
+                'token' => $cardRetryPaymentToken,
+                'order' => $cardOrderId,
+                'integration_id' => $cardIntegrationId,
+                'currency' => 'EGP',
+                'status' => 'issued',
+            ],
+        ],
+    ];
+    $cardRetryLiveStages = $classifyWithCapturingClient($cardPaymentKeyConfigDTO, $cardRetryExchanges);
+    verify(
+        $cardRetryLiveStages === ['auth', 'order', 'payment-key-card', 'auth', 'payment-key-card-retry'],
+        'The shared live classifier did not derive the Card Payment Key retry sequence.',
+    );
+    $cardRetryDirectory = $makeCardRecoveryDirectory('retry');
+    $writeRecoveryRun($cardRetryDirectory, $cardRetryExchanges);
+    $cardRetrySourceSnapshot = $snapshotSourceRun($cardRetryDirectory);
+    $cardRetryRecovery = $recoverCard($cardRetryDirectory);
+    verify(
+        $cardRetryRecovery['result'] === 'PASS'
+        && $cardRetryRecovery['payment_method'] === 'card'
+        && $cardRetryRecovery['exchange_count'] === 5
+        && $cardRetryRecovery['recovered_stages'] === $cardRetryLiveStages,
+        'Synthetic Card retry recovery did not match the shared live classifier.',
+    );
+    $cardRetrySnapshot = $validateRecoveryArtifact(
+        $cardRetryRecovery,
+        'payment-key',
+        basename($cardRetryDirectory),
+        'card',
+    );
+    foreach ($cardRetryRecovery['report']['exchanges'] as $exchange) {
+        verify(
+            $exchange['http_status'] === null
+            && $exchange['transport_ok'] === null
+            && $exchange['metadata_source'] === 'unavailable_from_retained_raw',
+            'Card retry recovery inferred an HTTP status or unavailable transport metadata.',
+        );
+    }
+    verify(
+        !str_contains($cardRetrySnapshot['contents'], $cardRefreshedAuthToken)
+        && !str_contains($cardRetrySnapshot['contents'], $cardRetryPaymentToken)
+        && $cardRetrySourceSnapshot === $snapshotSourceRun($cardRetryDirectory),
+        'Card retry artifact leaked a token or modified its retained source run.',
+    );
+    echo "PASS synthetic Card Payment Key retry recovery with honest unavailable metadata\n";
+
+    foreach ([
+        ['payment-key', null],
+        ['payment-key', 'kiosk'],
+        ['wallet', 'card'],
+    ] as [$invalidScenario, $invalidMethod]) {
+        $invalidRecovery = RetainedRunRecovery::recover(
+            $syntheticPaymentKeyConfigDirectory,
+            $cardNormalDirectory,
+            $invalidScenario,
+            $invalidMethod,
+        );
+        if (is_string($invalidRecovery['failure_artifact']['path'] ?? null)) {
+            $cardRecoveryArtifactPaths[] = $invalidRecovery['failure_artifact']['path'];
+        }
+        verify(
+            $invalidRecovery['result'] === 'FAIL'
+            && $invalidRecovery['exchange_count'] === 0
+            && $invalidRecovery['source_raw_retained'] === false,
+            'Unsupported recovery scenario/method combination did not fail before retained raw discovery.',
+        );
+    }
+    echo "PASS Card recovery explicit-method fail-closed combinations\n";
+
+    $contextReflection = new ReflectionClass(VerificationContext::class);
+    $mappingProbe = $contextReflection->newInstanceWithoutConstructor();
+    $mappingGuard = $contextReflection->getMethod('assertPaymentKeyOrderMapping');
+    $mappingGuard->invoke($mappingProbe, $cardOrderId, $cardOrderId);
+    $mappingResult = $contextReflection->getProperty('paymentKeyOrderIdMatchesCreatedOrder');
+    verify($mappingResult->getValue($mappingProbe) === true, 'Matching Payment Key order IDs were not observed.');
+    $mappingRejected = false;
+    try {
+        $mappingGuard->invoke($mappingProbe, $cardOrderId, 0);
+    } catch (RuntimeException $exception) {
+        $mappingRejected = true;
+        verify(
+            $mappingResult->getValue($mappingProbe) === false
+            && $contextReflection->getProperty('stage')->getValue($mappingProbe) === 'payment-key-order-mapping',
+            'Payment Key order-ID mismatch lost its safe boolean or failure stage.',
+        );
+    }
+    verify($mappingRejected, 'Mismatched Payment Key order IDs did not fail closed.');
+    echo "PASS Payment Key order-ID mapping observability and mismatch fail-closed guard\n";
 
     $kioskOrderRetryStages = $classifyWithCapturingClient($kioskConfigDTO, [
         $kioskAuthExchange,
@@ -2095,7 +2443,7 @@ JSON;
     echo "PASS 15 malformed, mismatched, unsupported, or third-attempt fail-closed cases\n";
 
     $kioskRecoveryDirectory = $makeKioskRecoveryDirectory('four-stage');
-    $writeKioskRecoveryRun($kioskRecoveryDirectory, $kioskFourExchangeRun);
+    $writeRecoveryRun($kioskRecoveryDirectory, $kioskFourExchangeRun);
     $kioskSourceSnapshot = $snapshotSourceRun($kioskRecoveryDirectory);
     $kioskSourceIdentity = basename($kioskRecoveryDirectory);
     $kioskRecoveryResult = RetainedRunRecovery::recover(
@@ -2302,7 +2650,7 @@ JSON;
         'Shared live classifier did not derive the synthetic Kiosk Pay retry sequence.',
     );
     $kioskRetryDirectory = $makeKioskRecoveryDirectory('retry');
-    $writeKioskRecoveryRun($kioskRetryDirectory, $kioskRetryExchanges);
+    $writeRecoveryRun($kioskRetryDirectory, $kioskRetryExchanges);
     $kioskRetrySourceSnapshot = $snapshotSourceRun($kioskRetryDirectory);
     $kioskRetryResult = RetainedRunRecovery::recover(
         $syntheticKioskConfigDirectory,
@@ -2345,7 +2693,7 @@ JSON;
     $kioskMismatchedPaymentKeyRequest = $kioskPaymentKeyExchange[1];
     $kioskMismatchedPaymentKeyRequest['integration_id'] = $kioskIntegrationId + 1;
     $kioskMismatchedIntegrationDirectory = $makeKioskRecoveryDirectory('mismatched-integration');
-    $writeKioskRecoveryRun($kioskMismatchedIntegrationDirectory, [
+    $writeRecoveryRun($kioskMismatchedIntegrationDirectory, [
         $kioskAuthExchange,
         $kioskOrderExchange,
         [
@@ -2385,7 +2733,7 @@ JSON;
     $malformedKioskPayRequest = $kioskRequestDTO->toArray($kioskAuthToken);
     unset($malformedKioskPayRequest['auth_token']);
     $malformedKioskDirectory = $makeKioskRecoveryDirectory('malformed-pay');
-    $writeKioskRecoveryRun($malformedKioskDirectory, [
+    $writeRecoveryRun($malformedKioskDirectory, [
         $kioskAuthExchange,
         $kioskOrderExchange,
         $kioskPaymentKeyExchange,
@@ -2501,7 +2849,7 @@ JSON;
         $recoveryArtifactPathB,
         $recoveryFailureArtifactPath,
     ];
-    $selfCheckArtifactPaths = array_merge($selfCheckArtifactPaths, $kioskRecoveryArtifactPaths);
+    $selfCheckArtifactPaths = array_merge($selfCheckArtifactPaths, $kioskRecoveryArtifactPaths, $cardRecoveryArtifactPaths);
     if ($legacyRecoverySentinelOwned && $legacyRecoveryArtifactPath !== null) {
         $selfCheckArtifactPaths[] = $legacyRecoveryArtifactPath;
     }
@@ -2572,6 +2920,23 @@ JSON;
         }
         if (is_dir($syntheticKioskRecoveryDirectory) && !rmdir($syntheticKioskRecoveryDirectory)) {
             $failure ??= new RuntimeException('Synthetic Kiosk retained-run directory cleanup failed.');
+        }
+    }
+    foreach ($syntheticCardRecoveryDirectories as $syntheticCardRecoveryDirectory) {
+        if (!is_dir($syntheticCardRecoveryDirectory)) {
+            continue;
+        }
+        foreach (scandir($syntheticCardRecoveryDirectory) ?: [] as $fileName) {
+            if ($fileName === '.' || $fileName === '..') {
+                continue;
+            }
+            $path = $syntheticCardRecoveryDirectory . DIRECTORY_SEPARATOR . $fileName;
+            if (is_file($path) && !is_link($path) && !unlink($path)) {
+                $failure ??= new RuntimeException('Synthetic Card retained-run cleanup failed.');
+            }
+        }
+        if (is_dir($syntheticCardRecoveryDirectory) && !rmdir($syntheticCardRecoveryDirectory)) {
+            $failure ??= new RuntimeException('Synthetic Card retained-run directory cleanup failed.');
         }
     }
     if ($syntheticRecoveryConfigDirectory !== null && is_file($syntheticRecoveryConfigDirectory . DIRECTORY_SEPARATOR . '.env')) {

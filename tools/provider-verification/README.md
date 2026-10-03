@@ -43,11 +43,13 @@ An existing retained run can be converted into a sanitized report without a prov
 ```sh
 php tools/provider-verification/recover.php <absolute-run-directory> wallet
 php tools/provider-verification/recover.php <absolute-run-directory> kiosk
+php tools/provider-verification/recover.php <absolute-run-directory> payment-key card
 ```
 
-Offline recovery supports the `wallet` and `kiosk` scenarios. It reads a source run in place, writes a sanitized
-recovery artifact, and does not delete or modify the retained raw run. Runtime-only metadata absent from raw files
-is reported as unavailable rather than inferred.
+Offline recovery supports the `wallet` and `kiosk` scenarios and standalone Card Payment Key recovery with an
+explicit `card` method. It makes no provider request. It reads a source run in place, writes a sanitized recovery
+artifact, and does not delete or modify the retained raw run. Runtime-only metadata absent from raw files is reported
+as unavailable rather than inferred.
 
 Reports preserve response field names, JSON shape, scalar types, nulls, and provider-semantic values. Known secrets, private PII, and account-specific identifiers are replaced with type-compatible placeholders; repeated IDs and references use stable mappings within a capture session. A leak guard fails closed if configured or detected sensitive values remain. Do not copy raw evidence into the repository, a fixture, a log, or a review comment.
 
