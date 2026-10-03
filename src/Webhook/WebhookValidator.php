@@ -17,6 +17,11 @@ use Maatify\Paymob\DTO\PaymobConfigDTO;
 use Maatify\Paymob\DTO\Webhook\WebhookPayloadDTO;
 use Maatify\Paymob\Exception\WebhookException;
 
+/**
+ * Verifies normalized Transaction Processed callback payloads with Paymob's transaction HMAC.
+ *
+ * The caller combines the JSON body with the query-string HMAC in one array before validation.
+ */
 final readonly class WebhookValidator
 {
     public function __construct(
@@ -24,34 +29,53 @@ final readonly class WebhookValidator
     ) {}
 
     /**
-     * Verify webhook payload against HMAC.
+     * Verifies a normalized Transaction Processed callback and returns its parsed payload.
      *
-     * @throws WebhookException
+     * The array must contain `type`, a transaction `obj`, and a non-empty string `hmac`. Every
+     * signed transaction field must be present with a string, integer, or boolean value. Invalid
+     * or incomplete signed input fails closed with WebhookException.
+     *
+     * @throws WebhookException When the secret, callback shape, signed fields, or HMAC is invalid.
      */
     public function validate(array $payload): WebhookPayloadDTO
     {
-        if (empty($this->config->hmacSecret)) {
-            throw new WebhookException("HMAC secret not configured");
+        if ($this->config->hmacSecret === '') {
+            throw new WebhookException('HMAC secret not configured');
         }
 
-        if (!isset($payload['hmac'])) {
-            throw new WebhookException("Missing HMAC in webhook payload");
+        if (($payload['type'] ?? null) !== 'TRANSACTION') {
+            throw new WebhookException('Unsupported webhook type');
         }
 
-        $computed = $this->computeHmac($payload['obj'] ?? []);
-        $provided = $payload['hmac'];
+        if (!isset($payload['obj']) || !is_array($payload['obj'])) {
+            throw new WebhookException('Missing or malformed transaction object');
+        }
 
-        if (!hash_equals($computed, $provided)) {
-            throw new WebhookException("Invalid HMAC signature");
+        if (!isset($payload['hmac']) || !is_string($payload['hmac']) || $payload['hmac'] === '') {
+            throw new WebhookException('Missing or malformed HMAC in webhook payload');
+        }
+
+        $computed = $this->computeHmac($payload['obj']);
+
+        if (!hash_equals($computed, $payload['hmac'])) {
+            throw new WebhookException('Invalid HMAC signature');
         }
 
         return WebhookPayloadDTO::fromArray($payload);
     }
 
+    /**
+     * Builds Paymob's ordered canonical transaction string and returns its SHA-512 HMAC.
+     *
+     * Boolean leaves use the literal strings `true` and `false`; all signed paths are required
+     * and unsupported leaf shapes are rejected instead of being replaced with guessed values.
+     * The transaction object is passed directly, so its transaction identifier path is `id`.
+     *
+     * @throws WebhookException When a signed path is missing or its leaf is unsupported.
+     */
     private function computeHmac(array $obj): string
     {
-        // ترتيب الحقول بيكون critical عند Paymob
-        $keys = [
+        $paths = [
             'amount_cents',
             'created_at',
             'currency',
@@ -65,7 +89,7 @@ final readonly class WebhookValidator
             'is_refunded',
             'is_standalone_payment',
             'is_voided',
-            'order',
+            'order.id',
             'owner',
             'pending',
             'source_data.pan',
@@ -74,16 +98,24 @@ final readonly class WebhookValidator
             'success',
         ];
 
-        $string = '';
-        foreach ($keys as $key) {
-            $parts = explode('.', $key);
+        $canonical = '';
+        foreach ($paths as $path) {
             $value = $obj;
-            foreach ($parts as $part) {
-                $value = $value[$part] ?? '';
+            foreach (explode('.', $path) as $part) {
+                if (!is_array($value) || !array_key_exists($part, $value)) {
+                    throw new WebhookException("Missing signed webhook field: {$path}");
+                }
+
+                $value = $value[$part];
             }
-            $string .= (string)$value;
+
+            if (!is_string($value) && !is_int($value) && !is_bool($value)) {
+                throw new WebhookException("Unsupported signed webhook field: {$path}");
+            }
+
+            $canonical .= is_bool($value) ? ($value ? 'true' : 'false') : (string)$value;
         }
 
-        return hash_hmac('sha512', $string, $this->config->hmacSecret);
+        return hash_hmac('sha512', $canonical, $this->config->hmacSecret);
     }
 }

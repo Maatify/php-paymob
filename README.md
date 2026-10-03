@@ -485,7 +485,7 @@ echo "Updated At      : {$transaction->updatedAt}\n";
 🌐 Webhooks
 
 Use WebhookValidator to verify Paymob webhook callbacks (e.g., transaction success/failure notifications).
-The validator automatically computes the HMAC using your configured secret and compares it against the payload.
+For a Transaction Processed callback, the JSON request body contains the transaction data and the HMAC is supplied in the query string. Combine both values into one normalized array before calling `validate()`; the validator computes the HMAC using your configured secret and compares it with that query value.
 
 ⚠️ Make sure to set PAYMOB_HMAC_SECRET in your .env.
 
@@ -497,12 +497,21 @@ use Maatify\Paymob\Exception\WebhookException;
 $validator = new WebhookValidator($bootstrap->config);
 
 try {
-    $payload = $validator->validate(
-        json_decode(file_get_contents('php://input'), true)
-    );
+    $body = file_get_contents('php://input');
+    if ($body === false) {
+        throw new RuntimeException('Unable to read webhook request body');
+    }
+
+    $payload = json_decode($body, true, 512, JSON_THROW_ON_ERROR);
+    if (!is_array($payload)) {
+        throw new RuntimeException('Webhook JSON body must be an object');
+    }
+
+    $payload['hmac'] = $_GET['hmac'] ?? null;
+    $payload = $validator->validate($payload);
 
     echo "✅ Webhook valid for Transaction #{$payload->transactionId}\n";
-} catch (WebhookException $e) {
+} catch (WebhookException | JsonException | RuntimeException $e) {
     echo "❌ Invalid webhook: " . $e->getMessage();
 }
 
