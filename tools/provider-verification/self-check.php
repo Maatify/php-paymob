@@ -308,6 +308,126 @@ JSON;
     verify(is_int($safe->order->id) && $safe->order->id > 0, 'Sanitized numeric provider IDs are not positive integers.');
     echo "PASS repeated ID consistency and distinct-ID separation\n";
 
+    $upgReferenceRawJson = <<<'JSON'
+{
+  "data": {
+    "klass": "WalletPayment",
+    "message": "Transaction Created Successfully",
+    "wallet_issuer": "VODAFONE",
+    "txn_response_code": "200",
+    "gateway_source": "",
+    "amount": 15000,
+    "currency": "EGP",
+    "pending": true,
+    "success": false,
+    "created_at": "2026-10-02T19:04:18.639752Z",
+    "uig_txn_id": "123456789",
+    "mpg_txn_id": "987654321",
+    "order_info": "synthetic-order-info-reference",
+    "mer_txn_ref": "synthetic-merchant-transaction-reference",
+    "upg_qrcode_ref": "synthetic-private-upg-reference"
+  },
+  "repeated": {"upg_qrcode_ref": "synthetic-private-upg-reference"},
+  "different": {"upg_qrcode_ref": "synthetic-different-upg-reference"},
+  "numeric_reference": {"upg_qrcode_ref": "112233445566"},
+  "other_endpoint_reference": "123456789012"
+}
+JSON;
+    $upgReferenceRaw = json_decode($upgReferenceRawJson);
+    verify($upgReferenceRaw instanceof stdClass, 'Synthetic UPG reference JSON did not decode.');
+    $upgReferenceSanitizer = new SemanticSanitizer();
+    $upgReferenceSanitizer->prime([$upgReferenceRaw]);
+    $upgReferenceSafe = $upgReferenceSanitizer->sanitize($upgReferenceRaw);
+    verify(
+        $upgReferenceSanitizer->sameShape($upgReferenceRaw, $upgReferenceSafe),
+        'UPG reference sanitization changed JSON shape or types.',
+    );
+    echo "PASS upg_qrcode_ref same-shape validation\n";
+
+    $upgReferenceMappings = [];
+    foreach ($upgReferenceSanitizer->referenceMappingSummary() as $mapping) {
+        foreach ($mapping['paths'] as $mappingPath) {
+            $upgReferenceMappings[$mappingPath] = $mapping['fake_value'];
+        }
+    }
+    $upgIdMappingPaths = [];
+    foreach ($upgReferenceSanitizer->idMappingSummary() as $mapping) {
+        foreach ($mapping['paths'] as $mappingPath) {
+            $upgIdMappingPaths[$mappingPath] = true;
+        }
+    }
+    $repeatedUpgReference = $upgReferenceSafe->data->upg_qrcode_ref;
+    $differentUpgReference = $upgReferenceSafe->different->upg_qrcode_ref;
+    $numericUpgReference = $upgReferenceSafe->numeric_reference->upg_qrcode_ref;
+    verify(
+        is_string($repeatedUpgReference)
+        && preg_match('/^PV-REF-\d{4}$/D', $repeatedUpgReference) === 1
+        && $repeatedUpgReference === $upgReferenceSafe->repeated->upg_qrcode_ref
+        && $repeatedUpgReference === $upgReferenceMappings['$.data.upg_qrcode_ref']
+        && $repeatedUpgReference === $upgReferenceMappings['$.repeated.upg_qrcode_ref'],
+        'Repeated UPG private references did not use one stable shared reference mapping.',
+    );
+    verify(
+        is_string($differentUpgReference)
+        && preg_match('/^PV-REF-\d{4}$/D', $differentUpgReference) === 1
+        && $differentUpgReference !== $repeatedUpgReference,
+        'Different UPG private references collapsed to the same mapping.',
+    );
+    verify(
+        is_string($numericUpgReference)
+        && preg_match('/^PV-REF-\d{4}$/D', $numericUpgReference) === 1
+        && $numericUpgReference === $upgReferenceMappings['$.numeric_reference.upg_qrcode_ref'],
+        'Digit-only UPG reference did not use the shared string-reference mapping.',
+    );
+    verify(
+        $upgReferenceSafe->other_endpoint_reference !== $upgReferenceMappings['$.numeric_reference.upg_qrcode_ref']
+        && !str_starts_with($upgReferenceSafe->other_endpoint_reference, 'PV-REF-'),
+        'Existing digit-only other_endpoint_reference ID mapping changed.',
+    );
+    verify(
+        isset($upgReferenceMappings['$.data.order_info'], $upgReferenceMappings['$.data.mer_txn_ref'])
+        && $upgReferenceSafe->data->uig_txn_id !== '123456789'
+        && $upgReferenceSafe->data->mpg_txn_id !== '987654321'
+        && isset($upgIdMappingPaths['$.data.uig_txn_id'], $upgIdMappingPaths['$.data.mpg_txn_id'])
+        && isset($upgIdMappingPaths['$.other_endpoint_reference']),
+        'Existing UPG transaction/reference mappings were not preserved.',
+    );
+    echo "PASS repeated reference consistency and distinct-reference separation\n";
+
+    verify(
+        $upgReferenceSafe->data->klass === 'WalletPayment'
+        && $upgReferenceSafe->data->message === 'Transaction Created Successfully'
+        && $upgReferenceSafe->data->wallet_issuer === 'VODAFONE'
+        && $upgReferenceSafe->data->txn_response_code === '200'
+        && $upgReferenceSafe->data->gateway_source === ''
+        && $upgReferenceSafe->data->amount === 15000
+        && $upgReferenceSafe->data->currency === 'EGP'
+        && $upgReferenceSafe->data->pending === true
+        && $upgReferenceSafe->data->success === false
+        && $upgReferenceSafe->data->created_at === '2026-10-02T19:04:18.639752Z',
+        'UPG sanitization changed provider-semantic Wallet fields.',
+    );
+    verify(
+        $upgReferenceSanitizer->semanticDifferences($upgReferenceRaw, $upgReferenceSafe) === [],
+        'UPG sanitization failed semantic validation.',
+    );
+    verify(
+        $upgReferenceSanitizer->sensitiveFieldDifferences($upgReferenceRaw, $upgReferenceSafe) === [],
+        'UPG sanitization failed sensitive-field validation.',
+    );
+    verify(
+        !$upgReferenceSanitizer->containsSensitiveValues($upgReferenceSafe),
+        'UPG sanitized response failed the leak guard.',
+    );
+    $upgReferenceSafeJson = json_encode($upgReferenceSafe, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+    foreach (['synthetic-private-upg-reference', 'synthetic-different-upg-reference', '112233445566'] as $rawUpgReference) {
+        verify(
+            !str_contains($upgReferenceSafeJson, $rawUpgReference),
+            'A raw UPG private reference remains in sanitized JSON.',
+        );
+    }
+    echo "PASS semantic preservation, sensitive-field validation, and UPG leak guard\n";
+
     $semanticDifferences = $sanitizer->semanticDifferences($raw, $safe);
     verify($semanticDifferences === [], 'Semantic-value verification reported a change.');
     $encoded = json_encode($safe, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
@@ -633,6 +753,38 @@ JSON;
             'phone_number' => '+201234567890',
         ],
     ], JSON_THROW_ON_ERROR);
+    $syntheticWalletResponse = <<<'JSON'
+{
+  "success": false,
+  "pending": true,
+  "payment_status": "UNPAID",
+  "order_id": 123456,
+  "transaction_id": 887766,
+  "integration_id": 73486,
+  "merchant_order_id": "recovery-private-order-ref",
+  "source": {"identifier": "01010101010", "subtype": "WALLET"},
+  "created_at": "2026-10-03T10:02:00Z",
+  "message": "Transaction Created Successfully",
+  "other_endpoint_reference": "recovery-other-endpoint-reference",
+  "data": {
+    "klass": "WalletPayment",
+    "message": "Transaction Created Successfully",
+    "wallet_issuer": "VODAFONE",
+    "txn_response_code": "200",
+    "gateway_source": "",
+    "amount": 15000,
+    "currency": "EGP",
+    "pending": true,
+    "created_at": "2026-10-03T10:02:00Z",
+    "uig_txn_id": "567890123",
+    "mpg_txn_id": "678901234",
+    "order_info": "recovery-order-info-reference",
+    "mer_txn_ref": "recovery-merchant-transaction-reference",
+    "upg_qrcode_ref": "synthetic-private-upg-reference"
+  },
+  "transaction": {"upg_qrcode_ref": "synthetic-private-upg-reference"}
+}
+JSON;
     $syntheticExchanges = [
         [
             'https://accept.paymob.com/api/auth/tokens',
@@ -652,7 +804,7 @@ JSON;
         [
             'https://accept.paymob.com/api/acceptance/payments/pay',
             '{"source":{"identifier":"01010101010","subtype":"WALLET"},"payment_token":"recovery-self-check-payment-token"}',
-            '{"success":false,"pending":true,"payment_status":"UNPAID","order_id":123456,"transaction_id":887766,"integration_id":73486,"merchant_order_id":"recovery-private-order-ref","source":{"identifier":"01010101010","subtype":"WALLET"},"created_at":"2026-10-03T10:02:00Z","message":"Transaction Created Successfully"}',
+            $syntheticWalletResponse,
         ],
     ];
     foreach ($syntheticExchanges as $index => [$url, $requestBody, $responseBody]) {
@@ -733,6 +885,42 @@ JSON;
         && $recoveredWallet['sanitized_response_fixture_candidate']['message'] === 'Transaction Created Successfully',
         'Recovery changed wallet response semantics.',
     );
+    $recoveredWalletResponse = $recoveredWallet['sanitized_response_fixture_candidate'];
+    $recoveredUpgReference = $recoveredWalletResponse['data']['upg_qrcode_ref'];
+    verify(
+        is_string($recoveredUpgReference)
+        && preg_match('/^PV-REF-\d{4}$/D', $recoveredUpgReference) === 1
+        && $recoveredUpgReference === $recoveredWalletResponse['transaction']['upg_qrcode_ref'],
+        'Synthetic recovery did not sanitize repeated upg_qrcode_ref values consistently.',
+    );
+    $recoveredUpgReferenceMapping = null;
+    foreach ($recoveryReport['reference_mappings'] as $mapping) {
+        if (in_array('$.exchanges[4].response.data.upg_qrcode_ref', $mapping['paths'], true)) {
+            $recoveredUpgReferenceMapping = $mapping;
+            break;
+        }
+    }
+    verify(
+        is_array($recoveredUpgReferenceMapping)
+        && $recoveredUpgReferenceMapping['fake_value'] === $recoveredUpgReference
+        && in_array('$.exchanges[4].response.transaction.upg_qrcode_ref', $recoveredUpgReferenceMapping['paths'], true),
+        'Synthetic recovery omitted the shared UPG reference mapping paths.',
+    );
+    verify(
+        $recoveredWalletResponse['data']['klass'] === 'WalletPayment'
+        && $recoveredWalletResponse['data']['message'] === 'Transaction Created Successfully'
+        && $recoveredWalletResponse['data']['wallet_issuer'] === 'VODAFONE'
+        && $recoveredWalletResponse['data']['txn_response_code'] === '200'
+        && $recoveredWalletResponse['data']['gateway_source'] === ''
+        && $recoveredWalletResponse['data']['amount'] === 15000
+        && $recoveredWalletResponse['data']['currency'] === 'EGP'
+        && $recoveredWalletResponse['data']['pending'] === true
+        && $recoveredWalletResponse['data']['created_at'] === '2026-10-03T10:02:00Z'
+        && $recoveredWalletResponse['data']['uig_txn_id'] !== '567890123'
+        && $recoveredWalletResponse['data']['mpg_txn_id'] !== '678901234',
+        'Synthetic recovery changed Wallet semantics or existing transaction ID mapping.',
+    );
+    echo "PASS F11 sanitized reference mapping through synthetic offline recovery\n";
     $orderResponse = $recoveryReport['exchanges'][1]['sanitized_response_fixture_candidate'];
     $paymentKeyRequest = $recoveryReport['exchanges'][2]['sanitized_request'];
     verify(
@@ -768,6 +956,10 @@ JSON;
         'recovery-self-check-auth-token',
         'recovery-self-check-payment-token',
         'recovery-private-order-ref',
+        'recovery-other-endpoint-reference',
+        'recovery-order-info-reference',
+        'recovery-merchant-transaction-reference',
+        'synthetic-private-upg-reference',
         'recovery-person@example.org',
     ] as $sensitiveLiteral) {
         verify(!str_contains($recoveryArtifactBytes, $sensitiveLiteral), 'Recovery artifact contains a synthetic secret or PII literal.');

@@ -10,6 +10,15 @@ use stdClass;
 /** Sanitizes provider evidence while preserving JSON structure and semantics. */
 final class SemanticSanitizer
 {
+    /** @var list<string> Existing private references whose digit-only strings retain numeric ID mapping. */
+    private const NUMERIC_PRIVATE_REFERENCE_ID_KEYS = [
+        'merchant_order_id',
+        'other_endpoint_reference',
+        'mer_txn_ref',
+        'order_info',
+        'bill_reference',
+    ];
+
     /** @var array<string, true> */
     private array $embeddedSensitiveValues = [];
 
@@ -116,7 +125,7 @@ final class SemanticSanitizer
         }
 
         if ($this->isPrivateReferenceKey($key)) {
-            if (ctype_digit($value)) {
+            if ($this->usesNumericIdMappingForPrivateReference($key, $value)) {
                 return $this->mapId($value, $path);
             }
 
@@ -208,7 +217,7 @@ final class SemanticSanitizer
                 } elseif ($this->isIdKey($name, $rawValue) && $rawValue !== '') {
                     $safeValue = (string)$this->mapId($rawValue, $queryPath);
                 } elseif ($this->isPrivateReferenceKey($name) && $rawValue !== '') {
-                    $safeValue = ctype_digit($rawValue)
+                    $safeValue = $this->usesNumericIdMappingForPrivateReference($name, $rawValue)
                         ? $this->mapId($rawValue, $queryPath)
                         : $this->mapReference($rawValue, $name, $queryPath);
                 } else {
@@ -785,7 +794,14 @@ final class SemanticSanitizer
             'mer_txn_ref',
             'order_info',
             'bill_reference',
+            'upg_qrcode_ref',
         ], true);
+    }
+
+    private function usesNumericIdMappingForPrivateReference(string $key, string $value): bool
+    {
+        return ctype_digit($value)
+            && in_array(strtolower($key), self::NUMERIC_PRIVATE_REFERENCE_ID_KEYS, true);
     }
 
     private function isUrlKey(string $key): bool
