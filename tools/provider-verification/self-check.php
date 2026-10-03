@@ -241,6 +241,46 @@ try {
         && !str_contains($transportSource, 'setStage('),
         'Live capture does not classify the actual request before cURL or persist that shared stage.',
     );
+
+    $guzzleGetMethod = new ReflectionMethod(\Maatify\Paymob\Http\GuzzleApiClient::class, 'get');
+    $guzzleSourcePath = $guzzleGetMethod->getFileName();
+    verify(is_string($guzzleSourcePath), 'Guzzle GET source path could not be resolved.');
+    $guzzleSourceLines = file($guzzleSourcePath);
+    verify(is_array($guzzleSourceLines), 'Guzzle GET source could not be read.');
+    $guzzleGetSource = implode('', array_slice(
+        $guzzleSourceLines,
+        $guzzleGetMethod->getStartLine() - 1,
+        $guzzleGetMethod->getEndLine() - $guzzleGetMethod->getStartLine() + 1,
+    ));
+    $guzzleGetTokens = [];
+    foreach (token_get_all("<?php\n" . $guzzleGetSource) as $token) {
+        if (is_array($token) && in_array($token[0], [T_OPEN_TAG, T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
+            continue;
+        }
+        $guzzleGetTokens[] = is_array($token) ? $token[1] : $token;
+    }
+    $guzzleCallPrefix = ['$this', '->', 'client', '->', 'get', '('];
+    $guzzleCallPositions = [];
+    for ($index = 0; $index < count($guzzleGetTokens); $index++) {
+        if (array_slice($guzzleGetTokens, $index, count($guzzleCallPrefix)) === $guzzleCallPrefix) {
+            $guzzleCallPositions[] = $index;
+        }
+    }
+    $expectedGuzzleGetCall = [
+        '$this', '->', 'client', '->', 'get', '(', '$uri', ',', '[',
+        "'query'", '=>', '$query', ',',
+        "'headers'", '=>', '$headers', ',',
+        "'timeout'", '=>', '30', ',',
+        ']', ')',
+    ];
+    verify(
+        count($guzzleCallPositions) === 1
+        && array_slice($guzzleGetTokens, $guzzleCallPositions[0], count($expectedGuzzleGetCall))
+            === $expectedGuzzleGetCall,
+        'GuzzleApiClient::get() no longer forwards query, caller headers, and timeout to its request options.',
+    );
+    echo "PASS Guzzle GET caller headers and request-option source contract\n";
+
     $verificationContextSource = file_get_contents(__DIR__ . '/Support/VerificationContext.php');
     verify(
         is_string($verificationContextSource)
