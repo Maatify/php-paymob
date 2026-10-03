@@ -25,6 +25,8 @@ final class VerificationContext
 {
     private string $stage = 'preflight';
 
+    private ?bool $paymentKeyOrderIdMatchesCreatedOrder = null;
+
     private function __construct(
         private readonly VerificationConfig $config,
         private readonly CaptureSession $captureSession,
@@ -102,6 +104,10 @@ final class VerificationContext
                 try {
                     $secrets = $config instanceof VerificationConfig ? $config->configuredSecrets() : [];
                     $diagnostic = $captureSession->failureDiagnostic($safeStage, $exception, $secrets);
+                    if ($context?->paymentKeyOrderIdMatchesCreatedOrder === false) {
+                        $diagnostic['service_results']['payment_key']['order_id_matches_created_order'] = false;
+                        $diagnostic['failure_classification'] = 'PACKAGE';
+                    }
                     $sanitizer = new SemanticSanitizer($secrets);
                     if ($sanitizer->containsSensitiveValues($diagnostic)) {
                         throw new \RuntimeException('Failure diagnostic did not pass the leak guard.');
@@ -131,6 +137,10 @@ final class VerificationContext
                         'raw_storage_directory' => $captureSession->rawDirectory(),
                         'captured_attempt_count' => count($diagnostic['captured_attempts']),
                     ];
+                    if ($context?->paymentKeyOrderIdMatchesCreatedOrder === false) {
+                        $summary['service_results']['payment_key']['order_id_matches_created_order'] = false;
+                        $summary['failure_classification'] = 'PACKAGE';
+                    }
                     if ($sanitizer->containsSensitiveValues($summary)) {
                         throw new \RuntimeException('Failure handoff summary did not pass the leak guard.');
                     }
@@ -204,6 +214,7 @@ final class VerificationContext
             billingData: $this->syntheticBillingData(),
             expirationMinutes: 180,
         ));
+        $this->assertPaymentKeyOrderMapping($orderResponse->id, $paymentKeyResponse->orderId);
         $results['payment_key'] = [
             'service' => PaymentKeyService::class,
             'dto' => $paymentKeyResponse::class,
@@ -213,8 +224,8 @@ final class VerificationContext
             'order_id_type' => get_debug_type($paymentKeyResponse->orderId),
             'integration_id_configured' => true,
             'expiration_value_sent' => 180,
+            'order_id_matches_created_order' => $this->paymentKeyOrderIdMatchesCreatedOrder,
         ];
-
         if ($this->config->scenario === 'payment-key') {
             return [
                 'result' => 'PASS',
@@ -319,6 +330,16 @@ final class VerificationContext
     private function setStage(string $stage): void
     {
         $this->stage = $stage;
+    }
+
+    /** Record the safe mapping result and stop a run with a mismatched Payment Key order ID. */
+    private function assertPaymentKeyOrderMapping(int $createdOrderId, int $paymentKeyOrderId): void
+    {
+        $this->paymentKeyOrderIdMatchesCreatedOrder = $createdOrderId === $paymentKeyOrderId;
+        if (!$this->paymentKeyOrderIdMatchesCreatedOrder) {
+            $this->setStage('payment-key-order-mapping');
+            throw new \RuntimeException('Payment Key response order ID does not match the created order.');
+        }
     }
 
     private function assertSafeOutput(array $report, SemanticSanitizer $sanitizer): void

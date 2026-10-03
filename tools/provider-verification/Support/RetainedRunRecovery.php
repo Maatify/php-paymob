@@ -30,25 +30,39 @@ final class RetainedRunRecovery
 
     /**
      * Run the network-free recovery flow and return only safe data.
+     * Payment Key recovery requires the explicit Card method; Wallet and Kiosk
+     * retain their existing scenario-only contract.
      *
      * @return array<string, mixed>
      */
-    public static function recover(string $repositoryRoot, string $sourceDirectory, string $scenario): array
+    public static function recover(
+        string $repositoryRoot,
+        string $sourceDirectory,
+        string $scenario,
+        ?string $paymentMethod = null,
+    ): array
     {
         $recovery = new self();
-        $recovery->scenario = in_array($scenario, ['wallet', 'kiosk'], true) ? $scenario : 'unsupported';
+        $recovery->scenario = in_array($scenario, ['wallet', 'kiosk', 'payment-key'], true)
+            ? $scenario : 'unsupported';
         try {
-            return $recovery->recoverValidated($repositoryRoot, $sourceDirectory, $scenario);
+            return $recovery->recoverValidated($repositoryRoot, $sourceDirectory, $scenario, $paymentMethod);
         } catch (Throwable $exception) {
             return $recovery->persistFailure($exception);
         }
     }
 
-    private function recoverValidated(string $repositoryRoot, string $sourceDirectory, string $scenario): array
+    private function recoverValidated(
+        string $repositoryRoot,
+        string $sourceDirectory,
+        string $scenario,
+        ?string $paymentMethod,
+    ): array
     {
         $this->stage = 'path-validation';
-        if (!in_array($scenario, ['wallet', 'kiosk'], true)) {
-            throw new RuntimeException('The retained-run recovery scenario is not supported.');
+        if (!(($scenario === 'wallet' || $scenario === 'kiosk') && $paymentMethod === null)
+            && !($scenario === 'payment-key' && $paymentMethod === 'card')) {
+            throw new RuntimeException('The retained-run recovery scenario and method are not supported.');
         }
         if (!$this->isAbsolutePath($sourceDirectory) || is_link($sourceDirectory)) {
             throw new RuntimeException('The retained run path must be an absolute non-symlink directory.');
@@ -76,13 +90,16 @@ final class RetainedRunRecovery
         $this->sourceDirectory = $runRealPath;
 
         $this->stage = 'configuration';
-        $config = VerificationConfig::load($repositoryRealPath, $scenario);
+        $config = VerificationConfig::load($repositoryRealPath, $scenario, $paymentMethod);
         if ($scenario === 'wallet'
             && ($config->walletIntegrationId === null || $config->walletTestMsisdn === null)) {
             throw new RuntimeException('Wallet recovery configuration is incomplete.');
         }
         if ($scenario === 'kiosk' && $config->kioskIntegrationId === null) {
             throw new RuntimeException('Kiosk recovery configuration is incomplete.');
+        }
+        if ($scenario === 'payment-key' && $config->cardIntegrationId === null) {
+            throw new RuntimeException('Card Payment Key recovery configuration is incomplete.');
         }
         $attemptStageClassifier = ProviderAttemptStageClassifier::fromConfig($config);
         $this->sanitizer = new SemanticSanitizer(
@@ -223,13 +240,17 @@ final class RetainedRunRecovery
             'leak_guard_result' => 'PASS',
             'referential_consistency_result' => 'PASS',
         ];
+        if ($scenario === 'payment-key') {
+            $report['source']['payment_method'] = 'card';
+        }
         if ($sanitizer->containsSensitiveValues($report)) {
             throw new RuntimeException('Recovered report did not pass the shared leak guard.');
         }
 
         $this->stage = 'artifact-persistence';
+        $artifactIdentity = $scenario === 'payment-key' ? 'payment-key-card' : $scenario;
         $artifactName = basename($this->sourceDirectory)
-            . '-recovered-' . $scenario . '-' . gmdate('Ymd\\THis\\Z')
+            . '-recovered-' . $artifactIdentity . '-' . gmdate('Ymd\\THis\\Z')
             . '-' . bin2hex(random_bytes(8)) . '.json';
         $artifact = CaptureSession::persistJsonArtifact($report, $artifactName);
         $readBack = file_get_contents($artifact['path']);
@@ -245,7 +266,7 @@ final class RetainedRunRecovery
             throw new RuntimeException('The retained source run is no longer present after recovery.');
         }
 
-        return [
+        $result = [
             'result' => 'PASS',
             'scenario' => $scenario,
             'source_run' => basename($this->sourceDirectory),
@@ -259,6 +280,11 @@ final class RetainedRunRecovery
             'artifact' => $artifact,
             'source_raw_retained' => true,
         ];
+        if ($scenario === 'payment-key') {
+            $result['payment_method'] = 'card';
+        }
+
+        return $result;
     }
 
     private function discoverTriplets(): void
