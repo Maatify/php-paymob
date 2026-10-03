@@ -47,7 +47,7 @@ final readonly class TransactionService
 
             $response = $this->http->get(
                 uri: $uri,
-                headers: ['Authorization' => $authToken]
+                headers: ['Authorization' => 'Bearer ' . $authToken]
             );
 
             return TransactionResponseDTO::fromArray($response);
@@ -58,7 +58,7 @@ final readonly class TransactionService
 
                 $response = $this->http->get(
                     uri: $uri,
-                    headers: ['Authorization' => $newToken]
+                    headers: ['Authorization' => 'Bearer ' . $newToken]
                 );
 
                 return TransactionResponseDTO::fromArray($response);

@@ -18,10 +18,13 @@ final class ProviderAttemptStageClassifier
 
     private int $walletPaymentAttempts = 0;
 
+    private int $transactionInquiryAttempts = 0;
+
     private function __construct(
         private readonly string $scenario,
         private readonly ?string $paymentMethod,
         private readonly ?int $integrationId,
+        private readonly ?int $transactionId,
     ) {}
 
     /** Build a run-scoped classifier from configuration that has already been validated. */
@@ -52,16 +55,17 @@ final class ProviderAttemptStageClassifier
             );
         }
 
-        return new self($config->scenario, $paymentMethod, $integrationId);
+        if ($config->scenario === 'transaction-inquiry'
+            && (!is_int($config->testTransactionId) || $config->testTransactionId < 1)) {
+            throw new RuntimeException('The configured Transaction ID is unavailable for attempt classification.');
+        }
+
+        return new self($config->scenario, $paymentMethod, $integrationId, $config->testTransactionId);
     }
 
     /** Classify one request represented as the live PHP array or a retained JSON object. */
     public function classify(string $url, mixed $request): string
     {
-        if (!$this->isRequestObject($request)) {
-            throw new RuntimeException('A provider attempt request must be an object.');
-        }
-
         $parts = parse_url($url);
         if (!is_array($parts) || ($parts['scheme'] ?? null) !== 'https'
             || ($parts['host'] ?? null) !== 'accept.paymob.com') {
@@ -70,6 +74,20 @@ final class ProviderAttemptStageClassifier
 
         $path = $parts['path'] ?? '';
 
+        if ($this->scenario === 'transaction-inquiry') {
+            if ($path === '/api/auth/tokens') {
+                if (!$this->isRequestObject($request)) {
+                    throw new RuntimeException('A provider attempt request must be an object.');
+                }
+                return $this->classifyAuth($request);
+            }
+            return $this->classifyTransactionInquiry($parts, $path, $request);
+        }
+
+        if (!$this->isRequestObject($request)) {
+            throw new RuntimeException('A provider attempt request must be an object.');
+        }
+
         return match ($path) {
             '/api/auth/tokens' => $this->classifyAuth($request),
             '/api/ecommerce/orders' => $this->classifyOrder($request),
@@ -77,6 +95,25 @@ final class ProviderAttemptStageClassifier
             '/api/acceptance/payments/pay' => $this->classifyPayment($request),
             default => throw new RuntimeException('A provider attempt URL path is not supported.'),
         };
+    }
+
+    /** Classify only the configured empty GET request, including its retained empty body. */
+    private function classifyTransactionInquiry(array $parts, string $path, mixed $request): string
+    {
+        if (isset($parts['query']) || isset($parts['fragment']) || isset($parts['port'])
+            || isset($parts['user']) || isset($parts['pass'])
+            || preg_match('~^/api/acceptance/transactions/([1-9][0-9]*)$~D', $path, $matches) !== 1
+            || (string)$this->transactionId !== $matches[1]
+            || ($request !== [] && $request !== null)) {
+            throw new RuntimeException('A Transaction Inquiry attempt does not match the configured empty GET request.');
+        }
+
+        return self::nextAttemptStage(
+            $this->transactionInquiryAttempts,
+            'transaction-inquiry',
+            'transaction-inquiry-retry',
+            'Transaction Inquiry',
+        );
     }
 
     /** @param array<string, mixed>|stdClass $request */

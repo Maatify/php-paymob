@@ -92,6 +92,7 @@ final readonly class GuzzleApiClient implements ApiClientInterface
         try {
             $response = $this->client->get($uri, [
                 'query'   => $query,
+                'headers' => $headers,
                 'timeout' => 30,
             ]);
         } catch (GuzzleException $e) {

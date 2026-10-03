@@ -190,6 +190,10 @@ final class SemanticSanitizer
         }
         $port = isset($parts['port']) ? ':' . (int)$parts['port'] : '';
         $segments = explode('/', (string)($parts['path'] ?? '/'));
+        $transactionIdPath = preg_match(
+            '~^/api/acceptance/transactions/[1-9][0-9]*$~D',
+            (string)($parts['path'] ?? ''),
+        ) === 1;
 
         foreach ($segments as $index => $segment) {
             if ($segment === '') {
@@ -199,7 +203,7 @@ final class SemanticSanitizer
             $decoded = rawurldecode($segment);
             if ($this->looksLikeSecretToken($decoded)) {
                 $segments[$index] = '%3CREDACTED_SECRET%3E';
-            } elseif (ctype_digit($decoded) && strlen($decoded) >= 5) {
+            } elseif (ctype_digit($decoded) && (($transactionIdPath && $index === 4) || strlen($decoded) >= 5)) {
                 $segments[$index] = rawurlencode((string)$this->mapId($decoded, $path . '.path[' . $index . ']'));
             } else {
                 $segments[$index] = rawurlencode($this->redactEmbeddedSensitiveText($decoded));

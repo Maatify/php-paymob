@@ -21,6 +21,7 @@ final readonly class VerificationConfig
         public ?int $kioskIntegrationId,
         public ?int $walletIntegrationId,
         public ?string $walletTestMsisdn,
+        public ?int $testTransactionId,
         public ?string $keysExpiry,
         public string $scenario,
         public ?string $paymentMethod,
@@ -37,7 +38,7 @@ final readonly class VerificationConfig
             throw new RuntimeException('The repository-local .env file is required.');
         }
 
-        if (!in_array($scenario, ['auth', 'order', 'payment-key', 'kiosk', 'wallet'], true)) {
+        if (!in_array($scenario, ['auth', 'order', 'payment-key', 'kiosk', 'wallet', 'transaction-inquiry'], true)) {
             throw new InvalidArgumentException('Unknown provider verification scenario.');
         }
 
@@ -69,6 +70,7 @@ final readonly class VerificationConfig
         $kioskIntegrationId = null;
         $walletIntegrationId = null;
         $walletTestMsisdn = null;
+        $testTransactionId = null;
 
         $requiredIntegration = match (true) {
             $scenario === 'payment-key' && $paymentMethod === 'card' => 'card',
@@ -100,6 +102,14 @@ final readonly class VerificationConfig
             }
         }
 
+        if ($scenario === 'transaction-inquiry') {
+            $value = self::required($values, 'PAYMOB_TEST_TRANSACTION_ID');
+            if (!ctype_digit($value) || $value[0] === '0' || (string)(int)$value !== $value) {
+                throw new RuntimeException('The transaction inquiry input must be a positive integer.');
+            }
+            $testTransactionId = (int)$value;
+        }
+
         $keysExpiry = isset($values['PAYMOB_KEYS_EXPIRY']) && trim((string)$values['PAYMOB_KEYS_EXPIRY']) !== ''
             ? trim((string)$values['PAYMOB_KEYS_EXPIRY'])
             : null;
@@ -119,6 +129,7 @@ final readonly class VerificationConfig
             $kioskIntegrationId,
             $walletIntegrationId,
             $walletTestMsisdn,
+            $testTransactionId,
             $keysExpiry,
             $scenario,
             $paymentMethod,

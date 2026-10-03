@@ -30,8 +30,8 @@ final class RetainedRunRecovery
 
     /**
      * Run the network-free recovery flow and return only safe data.
-     * Payment Key recovery requires the explicit Card method; Wallet and Kiosk
-     * retain their existing scenario-only contract.
+     * Payment Key recovery requires the explicit Card method. Wallet, Kiosk,
+     * and Transaction Inquiry retain a scenario-only contract.
      *
      * @return array<string, mixed>
      */
@@ -43,7 +43,7 @@ final class RetainedRunRecovery
     ): array
     {
         $recovery = new self();
-        $recovery->scenario = in_array($scenario, ['wallet', 'kiosk', 'payment-key'], true)
+        $recovery->scenario = in_array($scenario, ['wallet', 'kiosk', 'payment-key', 'transaction-inquiry'], true)
             ? $scenario : 'unsupported';
         try {
             return $recovery->recoverValidated($repositoryRoot, $sourceDirectory, $scenario, $paymentMethod);
@@ -60,7 +60,7 @@ final class RetainedRunRecovery
     ): array
     {
         $this->stage = 'path-validation';
-        if (!(($scenario === 'wallet' || $scenario === 'kiosk') && $paymentMethod === null)
+        if (!(in_array($scenario, ['wallet', 'kiosk', 'transaction-inquiry'], true) && $paymentMethod === null)
             && !($scenario === 'payment-key' && $paymentMethod === 'card')) {
             throw new RuntimeException('The retained-run recovery scenario and method are not supported.');
         }
@@ -101,6 +101,9 @@ final class RetainedRunRecovery
         if ($scenario === 'payment-key' && $config->cardIntegrationId === null) {
             throw new RuntimeException('Card Payment Key recovery configuration is incomplete.');
         }
+        if ($scenario === 'transaction-inquiry' && $config->testTransactionId === null) {
+            throw new RuntimeException('Transaction Inquiry recovery configuration is incomplete.');
+        }
         $attemptStageClassifier = ProviderAttemptStageClassifier::fromConfig($config);
         $this->sanitizer = new SemanticSanitizer(
             $config->configuredSecrets(),
@@ -117,18 +120,26 @@ final class RetainedRunRecovery
             $urlBytes = $this->readVerifiedRaw($files['request-url']);
             $requestBytes = $this->readVerifiedRaw($files['request-body']);
             $responseBytes = $this->readVerifiedRaw($files['response-body']);
-            $request = json_decode($requestBytes, false, 512, JSON_THROW_ON_ERROR);
+            $emptyTransactionGet = $scenario === 'transaction-inquiry' && $requestBytes === '';
+            $request = $emptyTransactionGet
+                ? null
+                : json_decode($requestBytes, false, 512, JSON_THROW_ON_ERROR);
             $response = json_decode($responseBytes, false, 512, JSON_THROW_ON_ERROR);
             if (!is_string($urlBytes) || trim($urlBytes) === '') {
                 throw new RuntimeException('A retained request URL is empty or invalid.');
             }
 
             $stage = $attemptStageClassifier->classify($urlBytes, $request);
+            if ($scenario === 'transaction-inquiry' && str_starts_with($stage, 'transaction-inquiry')
+                && !$emptyTransactionGet) {
+                throw new RuntimeException('A retained Transaction Inquiry GET must have an empty request body.');
+            }
             $decoded[] = [
                 'sequence' => (int)$sequence,
                 'stage' => $stage,
                 'raw_url' => $urlBytes,
                 'request_raw' => $request,
+                'request_json_valid' => !$emptyTransactionGet,
                 'response_raw' => $response,
                 'request_bytes' => $requestBytes,
                 'response_bytes' => $responseBytes,
@@ -139,6 +150,17 @@ final class RetainedRunRecovery
             $prime[] = $urlBytes;
             $prime[] = $request;
             $prime[] = $response;
+        }
+
+        if ($scenario === 'transaction-inquiry') {
+            $lastResponse = $decoded[array_key_last($decoded)]['response_raw'];
+            $responseId = $lastResponse instanceof stdClass ? ($lastResponse->id ?? null) : null;
+            if (!is_int($responseId) && !(is_string($responseId) && ctype_digit($responseId))) {
+                throw new RuntimeException('The retained Transaction Inquiry response has no valid Transaction ID.');
+            }
+            if ((int)$responseId !== $config->testTransactionId) {
+                throw new RuntimeException('The retained Transaction Inquiry response ID does not match the requested ID.');
+            }
         }
 
         $this->stage = 'sanitization';
@@ -182,7 +204,7 @@ final class RetainedRunRecovery
                 'request_body_sha256' => hash('sha256', $entry['request_bytes']),
                 'request_url_bytes' => strlen($entry['raw_url']),
                 'request_url_sha256' => hash('sha256', $entry['raw_url']),
-                'request_json_valid' => true,
+                'request_json_valid' => $entry['request_json_valid'] ? true : null,
                 'http_status' => null,
                 'transport_ok' => null,
                 'curl_errno' => null,
