@@ -26,7 +26,11 @@ $artifactDirectory = null;
 $rawDirectory = null;
 $failureArtifactPath = null;
 $recoveryArtifactPath = null;
+$recoveryArtifactPathB = null;
 $recoveryFailureArtifactPath = null;
+$legacyRecoveryArtifactPath = null;
+$legacyRecoverySentinelOwned = false;
+$unexpectedRecoveryFailureArtifactPaths = [];
 $syntheticRecoveryDirectory = null;
 $syntheticRecoveryFailureDirectory = null;
 $syntheticRecoveryConfigDirectory = null;
@@ -820,16 +824,134 @@ JSON;
         }
     }
 
-    $sourceSnapshot = [];
-    foreach (scandir($syntheticRecoveryDirectory) ?: [] as $fileName) {
-        if ($fileName === '.' || $fileName === '..') {
-            continue;
+    $snapshotFile = static function (string $path): array {
+        clearstatcache(true, $path);
+        if (is_link($path) || !is_file($path)) {
+            throw new RuntimeException('A synthetic evidence snapshot target is not a regular file.');
         }
-        $sourcePath = $syntheticRecoveryDirectory . DIRECTORY_SEPARATOR . $fileName;
-        $sourceSnapshot[$fileName] = [filesize($sourcePath), hash_file('sha256', $sourcePath), fileperms($sourcePath) & 0777];
-    }
+        $contents = file_get_contents($path);
+        $size = filesize($path);
+        $hash = hash_file('sha256', $path);
+        $permissions = fileperms($path);
+        if (!is_string($contents) || !is_int($size) || !is_string($hash) || !is_int($permissions)) {
+            throw new RuntimeException('A synthetic evidence snapshot could not be read completely.');
+        }
+
+        return [
+            'contents' => $contents,
+            'bytes' => $size,
+            'sha256' => $hash,
+            'permissions' => $permissions & 0777,
+        ];
+    };
+    $snapshotSourceRun = static function (string $directory) use ($snapshotFile): array {
+        clearstatcache(true, $directory);
+        $directoryPermissions = fileperms($directory);
+        if (is_link($directory) || !is_dir($directory) || !is_int($directoryPermissions)) {
+            throw new RuntimeException('Synthetic retained run directory could not be snapshotted safely.');
+        }
+        $entries = scandir($directory);
+        if (!is_array($entries)) {
+            throw new RuntimeException('Synthetic retained run could not be listed for a snapshot.');
+        }
+        $snapshot = [];
+        foreach ($entries as $fileName) {
+            if ($fileName === '.' || $fileName === '..') {
+                continue;
+            }
+            $snapshot[$fileName] = $snapshotFile($directory . DIRECTORY_SEPARATOR . $fileName);
+        }
+        ksort($snapshot, SORT_STRING);
+
+        return [
+            'directory_permissions' => $directoryPermissions & 0777,
+            'files' => $snapshot,
+        ];
+    };
+    $syntheticSourceIdentity = basename($syntheticRecoveryDirectory);
+    $expectedArtifactNamePattern = '/^' . preg_quote($syntheticSourceIdentity, '/')
+        . '-recovered-wallet-\\d{8}T\\d{6}Z-[a-f0-9]{16}\\.json$/D';
+    $validateRecoveryArtifact = static function (array $recovery) use (
+        $expectedArtifactNamePattern,
+        $repositoryPath,
+        $snapshotFile,
+    ): array {
+        $artifact = $recovery['artifact'] ?? null;
+        verify(is_array($artifact) && is_string($artifact['path'] ?? null), 'Successful recovery omitted its artifact path.');
+        verify(is_int($artifact['bytes'] ?? null) && is_string($artifact['sha256'] ?? null), 'Successful recovery omitted artifact size or hash metadata.');
+
+        $path = $artifact['path'];
+        $realPath = realpath($path);
+        $directory = realpath(dirname($path));
+        verify(
+            $realPath !== false && $directory !== false && !is_link($path) && is_file($path)
+            && dirname($realPath) === $directory,
+            'Successful recovery artifact is not a regular non-symlink file.',
+        );
+        verify(
+            preg_match($expectedArtifactNamePattern, basename($realPath)) === 1,
+            'Successful recovery artifact name omitted its source, scenario, UTC time, or random suffix.',
+        );
+        verify(
+            $repositoryPath !== false
+            && $realPath !== $repositoryPath
+            && !str_starts_with($realPath, $repositoryPath . DIRECTORY_SEPARATOR),
+            'Successful recovery artifact is inside the repository.',
+        );
+
+        $snapshot = $snapshotFile($realPath);
+        verify(
+            $snapshot['bytes'] === $artifact['bytes']
+            && strlen($snapshot['contents']) === $artifact['bytes'],
+            'Recovery artifact returned byte count does not match.',
+        );
+        verify(
+            hash_equals($artifact['sha256'], $snapshot['sha256'])
+            && hash_equals($artifact['sha256'], hash('sha256', $snapshot['contents'])),
+            'Recovery artifact returned SHA-256 does not match independent read-back.',
+        );
+        verify($snapshot['permissions'] === 0600, 'Recovery artifact file mode is not 0600.');
+        verify((fileperms($directory) & 0777) === 0700, 'Recovery artifact parent mode is not 0700.');
+        $persistedReport = json_decode($snapshot['contents'], true, 512, JSON_THROW_ON_ERROR);
+        verify(
+            is_array($persistedReport) && $persistedReport === ($recovery['report'] ?? null),
+            'Recovery artifact does not contain valid JSON.',
+        );
+
+        return $snapshot;
+    };
+    $sourceSnapshot = $snapshotSourceRun($syntheticRecoveryDirectory);
+    verify(is_string($artifactDirectory), 'Sanitized artifact directory is unavailable for the collision regression.');
+    $legacyRecoveryArtifactPath = $artifactDirectory . DIRECTORY_SEPARATOR
+        . $syntheticSourceIdentity . '-recovered-wallet-report.json';
+    verify(
+        !file_exists($legacyRecoveryArtifactPath) && !is_link($legacyRecoveryArtifactPath),
+        'Synthetic legacy recovery artifact path unexpectedly exists before sentinel creation.',
+    );
+    $legacySentinelBytes = json_encode(
+        ['sentinel' => 'legacy fixed-name collision artifact'],
+        JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR,
+    );
+    $legacySentinelFile = @fopen($legacyRecoveryArtifactPath, 'xb');
+    verify(is_resource($legacySentinelFile), 'Synthetic legacy recovery sentinel could not be created exclusively.');
+    $legacyRecoverySentinelOwned = true;
+    $legacySentinelWritten = fwrite($legacySentinelFile, $legacySentinelBytes);
+    $legacySentinelClosed = fclose($legacySentinelFile);
+    verify(
+        $legacySentinelWritten === strlen($legacySentinelBytes) && $legacySentinelClosed,
+        'Synthetic legacy recovery sentinel was not written completely.',
+    );
+    verify(chmod($legacyRecoveryArtifactPath, 0600), 'Synthetic legacy recovery sentinel mode could not be set.');
+    $legacySentinelSnapshot = $snapshotFile($legacyRecoveryArtifactPath);
+    verify(
+        is_array(json_decode($legacySentinelSnapshot['contents'], true, 512, JSON_THROW_ON_ERROR)),
+        'Synthetic legacy recovery sentinel is not valid JSON.',
+    );
 
     $recoveryResult = RetainedRunRecovery::recover($syntheticRecoveryConfigDirectory, $syntheticRecoveryDirectory, 'wallet');
+    if (is_string($recoveryResult['failure_artifact']['path'] ?? null)) {
+        $unexpectedRecoveryFailureArtifactPaths[] = $recoveryResult['failure_artifact']['path'];
+    }
     verify($recoveryResult['result'] === 'PASS', 'Synthetic offline recovery failed.');
     verify($recoveryResult['exchange_count'] === 4, 'Synthetic recovery did not discover four triplets.');
     verify(
@@ -837,6 +959,9 @@ JSON;
         'Synthetic recovery derived an incorrect stage sequence.',
     );
     verify($recoveryResult['source_raw_retained'] === true, 'Recovery did not retain the synthetic source run.');
+    verify(is_string($recoveryResult['artifact']['path'] ?? null), 'First recovery did not return an artifact path.');
+    $recoveryArtifactPath = $recoveryResult['artifact']['path'];
+    $recoveryArtifactSnapshot = $validateRecoveryArtifact($recoveryResult);
     $recoveryReport = $recoveryResult['report'];
     verify(
         $recoveryReport['source']['exchange_count'] === 4
@@ -943,13 +1068,7 @@ JSON;
         && $recoveryReport['referential_consistency_result'] === 'PASS',
         'Recovery omitted leak-guard or referential-consistency evidence.',
     );
-    $recoveryArtifactPath = $recoveryResult['artifact']['path'];
-    $recoveryArtifactBytes = file_get_contents($recoveryArtifactPath);
-    verify(is_string($recoveryArtifactBytes), 'Synthetic recovery artifact could not be read back.');
-    verify(strlen($recoveryArtifactBytes) === $recoveryResult['artifact']['bytes'], 'Recovery artifact byte count does not match.');
-    verify(hash_equals($recoveryResult['artifact']['sha256'], hash('sha256', $recoveryArtifactBytes)), 'Recovery artifact SHA-256 does not match.');
-    verify((fileperms(dirname($recoveryArtifactPath)) & 0777) === 0700, 'Recovery artifact directory mode is not 0700.');
-    verify((fileperms($recoveryArtifactPath) & 0777) === 0600, 'Recovery artifact file mode is not 0600.');
+    $recoveryArtifactBytes = $recoveryArtifactSnapshot['contents'];
     foreach ([
         'recovery-self-check-api-secret',
         'recovery-self-check-hmac-secret',
@@ -964,15 +1083,71 @@ JSON;
     ] as $sensitiveLiteral) {
         verify(!str_contains($recoveryArtifactBytes, $sensitiveLiteral), 'Recovery artifact contains a synthetic secret or PII literal.');
     }
-    $afterRecoverySnapshot = [];
-    foreach (scandir($syntheticRecoveryDirectory) ?: [] as $fileName) {
-        if ($fileName === '.' || $fileName === '..') {
-            continue;
-        }
-        $sourcePath = $syntheticRecoveryDirectory . DIRECTORY_SEPARATOR . $fileName;
-        $afterRecoverySnapshot[$fileName] = [filesize($sourcePath), hash_file('sha256', $sourcePath), fileperms($sourcePath) & 0777];
-    }
+    $afterRecoverySnapshot = $snapshotSourceRun($syntheticRecoveryDirectory);
     verify($sourceSnapshot === $afterRecoverySnapshot, 'Recovery modified the synthetic source run.');
+    verify(
+        $legacySentinelSnapshot === $snapshotFile($legacyRecoveryArtifactPath),
+        'First recovery modified or removed the pre-existing legacy artifact sentinel.',
+    );
+
+    $recoveryResultB = RetainedRunRecovery::recover(
+        $syntheticRecoveryConfigDirectory,
+        $syntheticRecoveryDirectory,
+        'wallet',
+    );
+    if (is_string($recoveryResultB['failure_artifact']['path'] ?? null)) {
+        $unexpectedRecoveryFailureArtifactPaths[] = $recoveryResultB['failure_artifact']['path'];
+    }
+    verify($recoveryResultB['result'] === 'PASS', 'Second synthetic offline recovery failed.');
+    verify($recoveryResultB['exchange_count'] === 4, 'Second synthetic recovery did not discover four triplets.');
+    verify(
+        $recoveryResultB['recovered_stages'] === ['auth', 'order', 'payment-key-wallet', 'wallet-initiation'],
+        'Second synthetic recovery derived an incorrect stage sequence.',
+    );
+    verify(is_string($recoveryResultB['artifact']['path'] ?? null), 'Second recovery did not return an artifact path.');
+    $recoveryArtifactPathB = $recoveryResultB['artifact']['path'];
+    verify(
+        $recoveryArtifactPath !== $recoveryArtifactPathB
+        && $recoveryArtifactPath !== $legacyRecoveryArtifactPath
+        && $recoveryArtifactPathB !== $legacyRecoveryArtifactPath,
+        'Successful recovery reused the first artifact or the legacy fixed-name sentinel path.',
+    );
+    $recoveryArtifactSnapshotB = $validateRecoveryArtifact($recoveryResultB);
+    $recoveryReportB = $recoveryResultB['report'];
+    $recoveryReportWithoutTimestamp = $recoveryReport;
+    $recoveryReportBWithoutTimestamp = $recoveryReportB;
+    unset($recoveryReportWithoutTimestamp['source']['recovered_at']);
+    unset($recoveryReportBWithoutTimestamp['source']['recovered_at']);
+    verify(
+        $recoveryReportBWithoutTimestamp === $recoveryReportWithoutTimestamp
+        && array_column($recoveryReportB['exchanges'], 'stage') === $recoveryResult['recovered_stages']
+        && $recoveryReportB['id_mappings'] === $recoveryReport['id_mappings']
+        && $recoveryReportB['reference_mappings'] === $recoveryReport['reference_mappings'],
+        'Second recovery changed the report schema, stages, or sanitizer mappings.',
+    );
+    verify(
+        $recoveryArtifactSnapshot === $snapshotFile($recoveryArtifactPath)
+        && is_file($recoveryArtifactPath)
+        && !is_link($recoveryArtifactPath),
+        'Artifact A was removed or changed by the second recovery.',
+    );
+    verify(
+        $recoveryArtifactSnapshotB === $snapshotFile($recoveryArtifactPathB)
+        && is_file($recoveryArtifactPathB)
+        && !is_link($recoveryArtifactPathB),
+        'Artifact B was removed or changed after its persistence.',
+    );
+    verify(
+        $legacySentinelSnapshot === $snapshotFile($legacyRecoveryArtifactPath)
+        && is_file($legacyRecoveryArtifactPath)
+        && !is_link($legacyRecoveryArtifactPath),
+        'Second recovery modified or removed the legacy artifact sentinel.',
+    );
+    verify(
+        $sourceSnapshot === $snapshotSourceRun($syntheticRecoveryDirectory),
+        'The second recovery modified the synthetic source run.',
+    );
+    echo "PASS F12 legacy-name collision sentinel, two unique recoveries, artifact read-back, permissions, and retained source snapshots\n";
     echo "PASS network-free retained-run recovery, stage derivation, sanitization, metadata honesty, referential consistency, and retained source\n";
 
     $syntheticRecoveryFailureDirectory = $privateNamespace . DIRECTORY_SEPARATOR . 'run-self-check-failure-' . bin2hex(random_bytes(6));
@@ -1054,11 +1229,23 @@ JSON;
         }
     }
 
-    foreach ([$artifactPath, $failureArtifactPath, $recoveryArtifactPath, $recoveryFailureArtifactPath] as $selfCheckArtifactPath) {
-        if ($selfCheckArtifactPath !== null && is_file($selfCheckArtifactPath) && !unlink($selfCheckArtifactPath)) {
+    $selfCheckArtifactPaths = [
+        $artifactPath,
+        $failureArtifactPath,
+        $recoveryArtifactPath,
+        $recoveryArtifactPathB,
+        $recoveryFailureArtifactPath,
+    ];
+    if ($legacyRecoverySentinelOwned && $legacyRecoveryArtifactPath !== null) {
+        $selfCheckArtifactPaths[] = $legacyRecoveryArtifactPath;
+    }
+    foreach (array_merge($selfCheckArtifactPaths, $unexpectedRecoveryFailureArtifactPaths) as $selfCheckArtifactPath) {
+        if ($selfCheckArtifactPath !== null && is_link($selfCheckArtifactPath)) {
+            $failure ??= new RuntimeException('Self-check sanitized artifact became a symlink and was not removed.');
+        } elseif ($selfCheckArtifactPath !== null && is_file($selfCheckArtifactPath) && !unlink($selfCheckArtifactPath)) {
             $failure ??= new RuntimeException('Self-check sanitized artifact cleanup failed.');
         }
-        if ($selfCheckArtifactPath !== null && file_exists($selfCheckArtifactPath)) {
+        if ($selfCheckArtifactPath !== null && (file_exists($selfCheckArtifactPath) || is_link($selfCheckArtifactPath))) {
             $failure ??= new RuntimeException('Self-check sanitized artifact remains after final cleanup.');
         }
     }

@@ -217,7 +217,9 @@ final class RetainedRunRecovery
         }
 
         $this->stage = 'artifact-persistence';
-        $artifactName = basename($this->sourceDirectory) . '-recovered-wallet-report.json';
+        $artifactName = basename($this->sourceDirectory)
+            . '-recovered-wallet-' . gmdate('Ymd\\THis\\Z')
+            . '-' . bin2hex(random_bytes(8)) . '.json';
         $artifact = CaptureSession::persistJsonArtifact($report, $artifactName);
         $readBack = file_get_contents($artifact['path']);
         if (!is_string($readBack) || strlen($readBack) !== $artifact['bytes']
