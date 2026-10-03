@@ -6,9 +6,15 @@ require_once __DIR__ . '/bootstrap.php';
 
 use Maatify\Paymob\DTO\Payment\KioskPaymentRequestDTO;
 use Maatify\Paymob\DTO\Payment\KioskPaymentResponseDTO;
+use Maatify\Paymob\DTO\Order\OrderItemDTO;
+use Maatify\Paymob\DTO\Order\OrderItemsDTO;
+use Maatify\Paymob\DTO\Order\OrderRequestDTO;
+use Maatify\Paymob\DTO\Payment\BillingDataDTO;
+use Maatify\Paymob\DTO\Payment\PaymentKeyRequestDTO;
 use Maatify\Paymob\Enum\CurrencyEnum;
 use Maatify\Paymob\ProviderVerification\Support\CaptureSession;
 use Maatify\Paymob\ProviderVerification\Support\CapturingApiClient;
+use Maatify\Paymob\ProviderVerification\Support\ProviderAttemptStageClassifier;
 use Maatify\Paymob\ProviderVerification\Support\RetainedRunRecovery;
 use Maatify\Paymob\ProviderVerification\Support\SemanticSanitizer;
 use Maatify\Paymob\ProviderVerification\Support\VerificationConfig;
@@ -34,6 +40,7 @@ $recoveryFailureArtifactPath = null;
 $kioskRecoveryArtifactPaths = [];
 $syntheticKioskRecoveryDirectories = [];
 $syntheticKioskConfigDirectory = null;
+$syntheticPaymentKeyConfigDirectory = null;
 $legacyRecoveryArtifactPath = null;
 $legacyRecoverySentinelOwned = false;
 $unexpectedRecoveryFailureArtifactPaths = [];
@@ -42,6 +49,86 @@ $syntheticRecoveryFailureDirectory = null;
 $syntheticRecoveryConfigDirectory = null;
 $rawCleaned = false;
 $failure = null;
+
+$createCapturingClient = static function (VerificationConfig $config) use (&$captureSession): CapturingApiClient {
+    if (!$captureSession instanceof CaptureSession) {
+        throw new RuntimeException('The network-free attempt classifier requires a prepared capture session.');
+    }
+
+    return new CapturingApiClient(
+        $config->baseUrl,
+        $captureSession,
+        ProviderAttemptStageClassifier::fromConfig($config),
+    );
+};
+
+$classifyWithCapturingClient = static function (VerificationConfig $config, array $exchanges) use (
+    $createCapturingClient,
+): array {
+    $client = $createCapturingClient($config);
+    $stages = [];
+    foreach ($exchanges as [$url, $request]) {
+        if (is_string($request)) {
+            $request = json_decode($request, true, 512, JSON_THROW_ON_ERROR);
+        }
+        $stages[] = $client->classifyAttemptStage($url, $request);
+    }
+
+    return $stages;
+};
+
+$expectClassificationFailure = static function (
+    CapturingApiClient $client,
+    string $url,
+    mixed $request,
+    string $description,
+): void {
+    try {
+        $client->classifyAttemptStage($url, $request);
+    } catch (RuntimeException) {
+        return;
+    }
+
+    verify(false, 'Malformed request unexpectedly classified: ' . $description);
+};
+
+$makeSyntheticOrderRequest = static function (string $authToken, string $merchantOrderId): array {
+    return (new OrderRequestDTO(
+        amountCents: 15000,
+        currency: CurrencyEnum::EGP,
+        merchantOrderId: $merchantOrderId,
+        items: new OrderItemsDTO(new OrderItemDTO(
+            name: 'Provider verification item',
+            amountCents: 15000,
+            quantity: 1,
+            description: 'Synthetic provider verification order',
+        )),
+    ))->toArray($authToken);
+};
+
+$makeSyntheticPaymentKeyRequest = static function (int $integrationId, string $authToken): array {
+    return (new PaymentKeyRequestDTO(
+        orderId: 123456,
+        integrationId: $integrationId,
+        amountCents: 15000,
+        currency: CurrencyEnum::EGP,
+        billingData: new BillingDataDTO(
+            firstName: 'Synthetic',
+            lastName: 'Verification',
+            email: 'synthetic@example.test',
+            phoneNumber: '+20000000000',
+            country: 'NA',
+            city: 'Synthetic City',
+            street: 'Synthetic Street',
+            building: '1',
+            floor: '1',
+            apartment: '1',
+            postalCode: '00000',
+            state: 'Synthetic State',
+        ),
+        expirationMinutes: 180,
+    ))->toArray($authToken);
+};
 
 try {
     verify(ini_get('zend.exception_ignore_args') === '1', 'Exception argument diagnostics are not disabled.');
@@ -122,6 +209,50 @@ try {
         'Transport self-check contains a cURL execution call.',
     );
 
+    $sendMethodMatch = preg_match(
+        '/private function send\\([^\\n]+\\): array\\s*\\{(.*?)\\n    \\}/s',
+        $transportSource,
+        $sendMethod,
+    );
+    $classifyPosition = $sendMethodMatch === 1
+        ? strpos($sendMethod[1], '$stage = $this->classifyAttemptStage($url, $requestShape);')
+        : false;
+    $curlInitPosition = $sendMethodMatch === 1 ? strpos($sendMethod[1], '$curl = curl_init($url);') : false;
+    $sendExecPosition = $sendMethodMatch === 1
+        ? strpos($sendMethod[1], $curlExecName . '($curl)')
+        : false;
+    verify(
+        $sendMethodMatch === 1 && is_int($classifyPosition) && is_int($curlInitPosition)
+        && is_int($sendExecPosition) && $classifyPosition < $curlInitPosition
+        && $curlInitPosition < $sendExecPosition
+        && str_contains($sendMethod[1], "'stage' => " . '$stage')
+        && !str_contains($transportSource, 'setStage('),
+        'Live capture does not classify the actual request before cURL or persist that shared stage.',
+    );
+    $verificationContextSource = file_get_contents(__DIR__ . '/Support/VerificationContext.php');
+    verify(
+        is_string($verificationContextSource)
+        && str_contains($verificationContextSource, 'ProviderAttemptStageClassifier::fromConfig($config)')
+        && !str_contains($verificationContextSource, '$this->apiClient->setStage('),
+        'VerificationContext still supplies coarse orchestration stages to live capture.',
+    );
+
+    $selfCheckSource = file_get_contents(__FILE__);
+    $procOpenName = 'proc_' . 'open';
+    verify(
+        is_string($selfCheckSource)
+        && preg_match('/\\b(?:curl_exec|shell_exec|passthru|popen)\\s*\\(/', $selfCheckSource) !== 1
+        && preg_match('/(?:file_get_contents|fopen)\\s*\\(\\s*[\'\"]https?:/i', $selfCheckSource) !== 1
+        && substr_count($selfCheckSource, $procOpenName . '(') === 2
+        && preg_match('/->\\s*(?:post|get)\\s*\\(/', $selfCheckSource) !== 1
+        && !str_contains($selfCheckSource, 'auth' . '.php')
+        && !str_contains($selfCheckSource, 'order' . '.php')
+        && !str_contains($selfCheckSource, 'kiosk' . '.php')
+        && !str_contains($selfCheckSource, 'wallet' . '.php')
+        && !str_contains($selfCheckSource, 'payment-key' . '.php'),
+        'The self-check source contains a provider execution or network-backed input.',
+    );
+
     verify(extension_loaded('curl'), 'The cURL extension is not loaded.');
     CapturingApiClient::selfCheckTransportConfiguration();
     echo "PASS cURL transport configuration without network execution\n";
@@ -143,9 +274,9 @@ try {
   "data": {"klass": "Wallet", "message": "Transaction Created Successfully", "txn_response_code": "APPROVED"},
   "created_at": "2026-10-02T12:00:00.000000Z",
   "order": {"id": 123456, "payment_status": "UNPAID"},
-  "shipping_data": {"order_id": 123456, "order": 123456, "integration_id": 73486},
-  "payment_key_claims": {"order_id": 123456, "integration_id": 73486},
-  "transaction": {"id": 887766, "source_id": 998877, "integration_id": 73486},
+  "shipping_data": {"order_id": 123456, "order": 123456, "integration_id": 980003},
+  "payment_key_claims": {"order_id": 123456, "integration_id": 980003},
+  "transaction": {"id": 887766, "source_id": 998877, "integration_id": 980003},
   "merchant_order_id": "private-merchant-reference-20261002",
   "customer": {
     "first_name": "Real Customer Name",
@@ -814,11 +945,47 @@ JSON;
 
     $recoverySource = file_get_contents(__DIR__ . '/Support/RetainedRunRecovery.php');
     $recoveryEntryPoint = file_get_contents(__DIR__ . '/recover.php');
-    verify(is_string($recoverySource) && is_string($recoveryEntryPoint), 'Recovery source could not be inspected.');
+    $attemptClassifierSource = file_get_contents(__DIR__ . '/Support/ProviderAttemptStageClassifier.php');
+    verify(
+        is_string($recoverySource) && is_string($recoveryEntryPoint) && is_string($attemptClassifierSource),
+        'Recovery or shared classifier source could not be inspected.',
+    );
     foreach (['curl_' . 'init', 'curl_' . 'exec', 'ApiClient' . 'Interface', 'Auth' . 'Service', 'Order' . 'Service'] as $forbiddenCall) {
         verify(
             !str_contains($recoverySource, $forbiddenCall) && !str_contains($recoveryEntryPoint, $forbiddenCall),
             'Offline recovery source contains a provider-network dependency.',
+        );
+    }
+    verify(
+        str_contains($recoverySource, '$attemptStageClassifier->classify($urlBytes, $request)')
+        && !str_contains($recoverySource, 'function deriveStage(')
+        && !str_contains($recoverySource, 'kioskPaymentAttemptCount')
+        && preg_match('/\\b\\d{5,}\\b/', $attemptClassifierSource) !== 1,
+        'Recovery or shared classifier retains a second rule source or performs a forbidden side effect.',
+    );
+    foreach ([
+        $curlExecName . '(',
+        'curl_' . 'init(',
+        'file_get_contents(',
+        'file_put_contents(',
+        'fopen(',
+        'mkdir(',
+        'unlink(',
+        'realpath(',
+        'getenv(',
+        'Dotenv',
+        '$_ENV',
+        '$_SERVER',
+        'error_log(',
+        'fwrite(',
+        'trigger_error(',
+        'CaptureSession',
+        'persistJsonArtifact(',
+    ] as $forbiddenClassifierOperation) {
+        verify(
+            !str_contains($attemptClassifierSource, $forbiddenClassifierOperation),
+            'The shared attempt classifier contains a forbidden environment, I/O, network, logging, '
+                . 'or artifact dependency.',
         );
     }
 
@@ -839,17 +1006,19 @@ JSON;
     $recoveryConfig = "PAYMOB_API_KEY=recovery-self-check-api-secret\n"
         . "PAYMOB_HMAC_SECRET=recovery-self-check-hmac-secret\n"
         . "PAYMOB_BASE_URL=https://accept.paymob.com/api\n"
-        . "PAYMOB_INTEGRATION_ID_WALLET=73486\n"
+        . "PAYMOB_INTEGRATION_ID_WALLET=980003\n"
         . "PAYMOB_TEST_WALLET_MSISDN=01010101010\n";
     verify(file_put_contents($recoveryConfigPath, $recoveryConfig) === strlen($recoveryConfig), 'Synthetic recovery configuration could not be written.');
     chmod($recoveryConfigPath, 0600);
+    $walletRecoveryConfigDTO = VerificationConfig::load($syntheticRecoveryConfigDirectory, 'wallet');
 
     $syntheticPaymentKeyRequest = json_encode([
         'auth_token' => 'recovery-self-check-auth-token',
         'order_id' => 123456,
-        'integration_id' => 73486,
+        'integration_id' => 980003,
         'amount_cents' => 15000,
         'currency' => 'EGP',
+        'expiration' => 180,
         'created_at' => '2026-10-03T10:01:00Z',
         'verification_label' => 'Provider Verification step 1',
         'billing_data' => [
@@ -873,7 +1042,7 @@ JSON;
   "payment_status": "UNPAID",
   "order_id": 123456,
   "transaction_id": 887766,
-  "integration_id": 73486,
+  "integration_id": 980003,
   "merchant_order_id": "recovery-private-order-ref",
   "source": {"identifier": "01010101010", "subtype": "WALLET"},
   "created_at": "2026-10-03T10:02:00Z",
@@ -906,13 +1075,22 @@ JSON;
         ],
         [
             'https://accept.paymob.com/api/ecommerce/orders',
-            '{"amount_cents":15000,"currency":"EGP","merchant_order_id":"recovery-private-order-ref","items":[{"name":"Synthetic wallet order","amount_cents":15000,"quantity":1}]}',
+            json_encode(
+                $makeSyntheticOrderRequest('recovery-self-check-auth-token', 'recovery-private-order-ref'),
+                JSON_THROW_ON_ERROR,
+            ),
             '{"id":123456,"merchant_order_id":"recovery-private-order-ref","merchant":{"id":345678,"phones":["synthetic-merchant-private-phone-zero","synthetic-merchant-private-phone-index-one",null]},"payment_status":"UNPAID","created_at":"2026-10-03T10:01:00Z"}',
         ],
         [
             'https://accept.paymob.com/api/acceptance/payment_keys',
             $syntheticPaymentKeyRequest,
-            '{"token":"recovery-self-check-payment-token","order_id":123456,"integration_id":73486,"currency":"EGP","status":"issued"}',
+            json_encode([
+                'token' => 'recovery-self-check-payment-token',
+                'order_id' => 123456,
+                'integration_id' => 980003,
+                'currency' => 'EGP',
+                'status' => 'issued',
+            ], JSON_THROW_ON_ERROR),
         ],
         [
             'https://accept.paymob.com/api/acceptance/payments/pay',
@@ -920,6 +1098,19 @@ JSON;
             $syntheticWalletResponse,
         ],
     ];
+    $walletLiveStages = $classifyWithCapturingClient($walletRecoveryConfigDTO, $syntheticExchanges);
+    verify(
+        $walletLiveStages === ['auth', 'order', 'payment-key-wallet', 'wallet-initiation'],
+        'The shared live classifier did not derive the normal Wallet stage sequence.',
+    );
+    $walletSyntheticOrderRequest = json_decode($syntheticExchanges[1][1], true, 512, JSON_THROW_ON_ERROR);
+    verify(
+        is_array($walletSyntheticOrderRequest)
+        && $walletSyntheticOrderRequest['auth_token'] === 'recovery-self-check-auth-token',
+        'Synthetic Wallet Order request was not derived from OrderRequestDTO with its Auth token.',
+    );
+    echo "PASS shared live classifier normal Wallet sequence and DTO-derived Order request\n";
+
     foreach ($syntheticExchanges as $index => [$url, $requestBody, $responseBody]) {
         $prefix = str_pad((string)($index + 1), 4, '0', STR_PAD_LEFT);
         foreach ([
@@ -1066,7 +1257,8 @@ JSON;
     verify(
         $recoveryResult['result'] === 'PASS'
         && $recoveryResult['scenario'] === 'wallet'
-        && $recoveryResult['report']['source']['scenario'] === 'wallet',
+        && $recoveryResult['report']['source']['scenario'] === 'wallet'
+        && $recoveryResult['recovered_stages'] === $walletLiveStages,
         'Synthetic offline Wallet recovery failed or lost its selected scenario.',
     );
     verify($recoveryResult['exchange_count'] === 4, 'Synthetic recovery did not discover four triplets.');
@@ -1360,6 +1552,39 @@ JSON;
     );
     echo "PASS Kiosk request DTO AGGREGATOR contract with synthetic tokens\n";
 
+    $syntheticPaymentKeyConfigDirectory = sys_get_temp_dir() . DIRECTORY_SEPARATOR
+        . 'paymob-classifier-payment-key-config-' . bin2hex(random_bytes(6));
+    verify(
+        mkdir($syntheticPaymentKeyConfigDirectory, 0700),
+        'Synthetic Payment Key classifier configuration directory could not be created.',
+    );
+    $paymentKeyConfigPath = $syntheticPaymentKeyConfigDirectory . DIRECTORY_SEPARATOR . '.env';
+    $paymentKeyConfig = "PAYMOB_API_KEY=classifier-self-check-api-key\n"
+        . "PAYMOB_BASE_URL=https://accept.paymob.com/api\n"
+        . "PAYMOB_INTEGRATION_ID_CARD=980001\n"
+        . "PAYMOB_INTEGRATION_ID_KIOSK=980002\n"
+        . "PAYMOB_INTEGRATION_ID_WALLET=980003\n";
+    verify(
+        file_put_contents($paymentKeyConfigPath, $paymentKeyConfig) === strlen($paymentKeyConfig),
+        'Synthetic Payment Key classifier configuration could not be written.',
+    );
+    chmod($paymentKeyConfigPath, 0600);
+    $cardPaymentKeyConfigDTO = VerificationConfig::load(
+        $syntheticPaymentKeyConfigDirectory,
+        'payment-key',
+        'card',
+    );
+    $kioskPaymentKeyConfigDTO = VerificationConfig::load(
+        $syntheticPaymentKeyConfigDirectory,
+        'payment-key',
+        'kiosk',
+    );
+    $walletPaymentKeyConfigDTO = VerificationConfig::load(
+        $syntheticPaymentKeyConfigDirectory,
+        'payment-key',
+        'wallet',
+    );
+
     $syntheticKioskResponse = [
         'id' => 887766,
         'order' => [
@@ -1490,12 +1715,7 @@ JSON;
     ];
     $kioskOrderExchange = [
         'https://accept.paymob.com/api/ecommerce/orders',
-        [
-            'amount_cents' => 15000,
-            'currency' => 'EGP',
-            'merchant_order_id' => $kioskMerchantOrderReference,
-            'items' => [['name' => 'Synthetic Kiosk Order', 'amount_cents' => 15000, 'quantity' => 1]],
-        ],
+        $makeSyntheticOrderRequest($kioskAuthToken, $kioskMerchantOrderReference),
         [
             'id' => 123456,
             'merchant_order_id' => $kioskMerchantOrderReference,
@@ -1511,6 +1731,7 @@ JSON;
             'integration_id' => $kioskIntegrationId,
             'amount_cents' => 15000,
             'currency' => 'EGP',
+            'expiration' => 180,
             'billing_data' => [
                 'first_name' => 'Synthetic Kiosk Customer',
                 'last_name' => 'Private Example',
@@ -1544,6 +1765,334 @@ JSON;
         $kioskPaymentKeyExchange,
         $kioskPaymentExchange,
     ];
+    $kioskLiveStages = $classifyWithCapturingClient($kioskConfigDTO, $kioskFourExchangeRun);
+    verify(
+        $kioskLiveStages === ['auth', 'order', 'payment-key-kiosk', 'kiosk-payment'],
+        'The shared live classifier did not derive the normal Kiosk stage sequence.',
+    );
+    echo "PASS shared live classifier normal Kiosk sequence\n";
+
+    $authUrl = 'https://accept.paymob.com/api/auth/tokens';
+    $orderUrl = 'https://accept.paymob.com/api/ecommerce/orders';
+    $paymentKeyUrl = 'https://accept.paymob.com/api/acceptance/payment_keys';
+    $paymentUrl = 'https://accept.paymob.com/api/acceptance/payments/pay';
+    $syntheticRefreshAuthToken = 'classifier-synthetic-refreshed-auth-token';
+    $classifierAuthExchange = [
+        $authUrl,
+        ['api_key' => 'classifier-synthetic-api-key'],
+        ['token' => 'classifier-synthetic-auth-token'],
+    ];
+    $classifierOrderExchange = [
+        $orderUrl,
+        $makeSyntheticOrderRequest('classifier-synthetic-auth-token', 'classifier-order-reference'),
+        [],
+    ];
+    $classifierRefreshAuthExchange = [
+        $authUrl,
+        ['api_key' => 'classifier-synthetic-api-key'],
+        ['token' => $syntheticRefreshAuthToken],
+    ];
+    $classifierOrderRetryExchange = [
+        $orderUrl,
+        $makeSyntheticOrderRequest($syntheticRefreshAuthToken, 'classifier-order-reference'),
+        [],
+    ];
+    $cardIntegrationId = $cardPaymentKeyConfigDTO->cardIntegrationId;
+    $paymentKeyKioskIntegrationId = $kioskPaymentKeyConfigDTO->kioskIntegrationId;
+    $paymentKeyWalletIntegrationId = $walletPaymentKeyConfigDTO->walletIntegrationId;
+    verify(
+        $cardIntegrationId === 980001
+        && $paymentKeyKioskIntegrationId === 980002
+        && $paymentKeyWalletIntegrationId === 980003,
+        'Payment Key classifier fixtures did not select each method integration from configuration.',
+    );
+    $cardPaymentKeyExchange = [
+        $paymentKeyUrl,
+        $makeSyntheticPaymentKeyRequest((int)$cardIntegrationId, 'classifier-synthetic-auth-token'),
+        [],
+    ];
+    $cardPaymentKeyRetryExchange = [
+        $paymentKeyUrl,
+        $makeSyntheticPaymentKeyRequest((int)$cardIntegrationId, $syntheticRefreshAuthToken),
+        [],
+    ];
+    $kioskSelectedPaymentKeyExchange = [
+        $paymentKeyUrl,
+        $makeSyntheticPaymentKeyRequest((int)$paymentKeyKioskIntegrationId, 'classifier-synthetic-auth-token'),
+        [],
+    ];
+    $walletSelectedPaymentKeyExchange = [
+        $paymentKeyUrl,
+        $makeSyntheticPaymentKeyRequest((int)$paymentKeyWalletIntegrationId, 'classifier-synthetic-auth-token'),
+        [],
+    ];
+    $cardPaymentKeyRetryStages = $classifyWithCapturingClient($cardPaymentKeyConfigDTO, [
+        $classifierAuthExchange,
+        $classifierOrderExchange,
+        $cardPaymentKeyExchange,
+        $classifierRefreshAuthExchange,
+        $cardPaymentKeyRetryExchange,
+    ]);
+    verify(
+        $cardPaymentKeyRetryStages === [
+            'auth', 'order', 'payment-key-card', 'auth', 'payment-key-card-retry',
+        ],
+        'Synthetic Card Payment Key classification did not select its configured integration or retry stage.',
+    );
+    verify(
+        $classifyWithCapturingClient($kioskPaymentKeyConfigDTO, [
+            $classifierAuthExchange,
+            $classifierOrderExchange,
+            $kioskSelectedPaymentKeyExchange,
+        ]) === ['auth', 'order', 'payment-key-kiosk'],
+        'Payment Key scenario did not select the configured Kiosk integration.',
+    );
+    verify(
+        $classifyWithCapturingClient($walletPaymentKeyConfigDTO, [
+            $classifierAuthExchange,
+            $classifierOrderExchange,
+            $walletSelectedPaymentKeyExchange,
+        ]) === ['auth', 'order', 'payment-key-wallet'],
+        'Payment Key scenario did not select the configured Wallet integration.',
+    );
+    $orderOnlyConfigDTO = VerificationConfig::load($configurationDirectory, 'order');
+    verify(
+        $classifyWithCapturingClient($optionalHmacConfig, [[$authUrl, ['api_key' => 'self-check-api-key-value'], []]])
+            === ['auth']
+        && $classifyWithCapturingClient($orderOnlyConfigDTO, [
+            [$authUrl, ['api_key' => 'self-check-api-key-value'], []],
+            [$orderUrl, $makeSyntheticOrderRequest('classifier-synthetic-auth-token', 'order-only-reference'), []],
+        ]) === ['auth', 'order'],
+        'Auth or Order scenario did not use the shared classifier.',
+    );
+    $objectAuthClient = $createCapturingClient($optionalHmacConfig);
+    verify(
+        $objectAuthClient->classifyAttemptStage($authUrl, (object)['api_key' => 'self-check-api-key-value']) === 'auth',
+        'Shared classifier did not accept retained JSON object request input.',
+    );
+    echo "PASS Auth, Order, Payment Key card/kiosk/wallet, and array/object input classification\n";
+
+    $kioskOrderRetryStages = $classifyWithCapturingClient($kioskConfigDTO, [
+        $kioskAuthExchange,
+        $kioskOrderExchange,
+        $classifierRefreshAuthExchange,
+        $classifierOrderRetryExchange,
+        $kioskPaymentKeyExchange,
+        $kioskPaymentExchange,
+    ]);
+    verify(
+        $kioskOrderRetryStages === [
+            'auth', 'order', 'auth', 'order-retry', 'payment-key-kiosk', 'kiosk-payment',
+        ],
+        'Kiosk Order retry did not retain the Auth/Order semantic sequence.',
+    );
+    $kioskPaymentKeyRetryRequest = $kioskPaymentKeyExchange[1];
+    $kioskPaymentKeyRetryRequest['auth_token'] = $syntheticRefreshAuthToken;
+    $kioskPaymentKeyRetryStages = $classifyWithCapturingClient($kioskConfigDTO, [
+        $kioskAuthExchange,
+        $kioskOrderExchange,
+        $kioskPaymentKeyExchange,
+        $classifierRefreshAuthExchange,
+        [$paymentKeyUrl, $kioskPaymentKeyRetryRequest, []],
+        $kioskPaymentExchange,
+    ]);
+    verify(
+        $kioskPaymentKeyRetryStages === [
+            'auth', 'order', 'payment-key-kiosk', 'auth', 'payment-key-kiosk-retry', 'kiosk-payment',
+        ],
+        'Kiosk Payment Key retry did not use its independent attempt counter.',
+    );
+
+    $walletInitialRequest = json_decode($syntheticExchanges[3][1], true, 512, JSON_THROW_ON_ERROR);
+    $walletRefreshAuthExchange = [
+        $authUrl,
+        ['api_key' => 'recovery-self-check-api-secret'],
+        ['token' => 'wallet-classifier-refreshed-auth-token'],
+    ];
+    $walletOrderRetryStages = $classifyWithCapturingClient($walletRecoveryConfigDTO, [
+        $syntheticExchanges[0],
+        $syntheticExchanges[1],
+        $walletRefreshAuthExchange,
+        [
+            $orderUrl,
+            $makeSyntheticOrderRequest('wallet-classifier-refreshed-auth-token', 'recovery-private-order-ref'),
+            [],
+        ],
+        $syntheticExchanges[2],
+        $syntheticExchanges[3],
+    ]);
+    verify(
+        $walletOrderRetryStages === [
+            'auth', 'order', 'auth', 'order-retry', 'payment-key-wallet', 'wallet-initiation',
+        ],
+        'Wallet Order retry did not use the shared classifier.',
+    );
+    $walletPaymentKeyRetryStages = $classifyWithCapturingClient($walletRecoveryConfigDTO, [
+        $syntheticExchanges[0],
+        $syntheticExchanges[1],
+        $syntheticExchanges[2],
+        $walletRefreshAuthExchange,
+        [$paymentKeyUrl, $makeSyntheticPaymentKeyRequest(980003, 'wallet-classifier-refreshed-auth-token'), []],
+        $syntheticExchanges[3],
+    ]);
+    verify(
+        $walletPaymentKeyRetryStages === [
+            'auth', 'order', 'payment-key-wallet', 'auth', 'payment-key-wallet-retry', 'wallet-initiation',
+        ],
+        'Wallet Payment Key retry did not use its independent attempt counter.',
+    );
+    $walletPaymentRetryRequest = $walletInitialRequest;
+    $walletPaymentRetryRequest['auth_token'] = 'wallet-classifier-refreshed-auth-token';
+    $walletPaymentRetryStages = $classifyWithCapturingClient($walletRecoveryConfigDTO, [
+        $syntheticExchanges[0],
+        $syntheticExchanges[1],
+        $syntheticExchanges[2],
+        $syntheticExchanges[3],
+        $walletRefreshAuthExchange,
+        [$paymentUrl, $walletPaymentRetryRequest, []],
+    ]);
+    verify(
+        $walletPaymentRetryStages === [
+            'auth', 'order', 'payment-key-wallet', 'wallet-initiation', 'auth', 'wallet-initiation-retry',
+        ],
+        'Wallet Pay retry did not require and classify its refreshed Auth token.',
+    );
+    echo "PASS Kiosk and Wallet Order, Payment Key, and Pay retry sequences\n";
+
+    $classifierFailureCases = 0;
+    $expectClassifierFailureCase = static function (
+        VerificationConfig $config,
+        string $url,
+        mixed $request,
+        string $description,
+    ) use (&$classifierFailureCases, $createCapturingClient, $expectClassificationFailure): void {
+        $expectClassificationFailure($createCapturingClient($config), $url, $request, $description);
+        $classifierFailureCases++;
+    };
+    $expectClassifierFailureCase($optionalHmacConfig, $authUrl, ['wrong' => 'shape'], 'missing Auth api_key');
+    $expectClassifierFailureCase($orderOnlyConfigDTO, $orderUrl, [
+        'amount_cents' => 15000,
+        'currency' => 'EGP',
+    ], 'missing Order auth_token');
+    $missingPaymentKeyExpiration = $makeSyntheticPaymentKeyRequest((int)$cardIntegrationId, 'synthetic-token');
+    unset($missingPaymentKeyExpiration['expiration']);
+    $expectClassifierFailureCase(
+        $cardPaymentKeyConfigDTO,
+        $paymentKeyUrl,
+        $missingPaymentKeyExpiration,
+        'missing Payment Key expiration',
+    );
+    $mismatchedCardIntegrationRequest = $makeSyntheticPaymentKeyRequest(
+        (int)$cardIntegrationId + 1,
+        'synthetic-token',
+    );
+    $expectClassifierFailureCase(
+        $cardPaymentKeyConfigDTO,
+        $paymentKeyUrl,
+        $mismatchedCardIntegrationRequest,
+        'Payment Key integration mismatch',
+    );
+    $expectClassifierFailureCase($kioskConfigDTO, $paymentUrl, [
+        'source' => ['identifier' => 'not-aggregator', 'subtype' => 'AGGREGATOR'],
+        'payment_token' => 'synthetic-token',
+        'auth_token' => 'synthetic-auth-token',
+    ], 'malformed Kiosk AGGREGATOR source');
+    $walletUnexpectedInitialAuth = $walletInitialRequest;
+    $walletUnexpectedInitialAuth['auth_token'] = 'unexpected-initial-auth-token';
+    $expectClassifierFailureCase(
+        $walletRecoveryConfigDTO,
+        $paymentUrl,
+        $walletUnexpectedInitialAuth,
+        'Wallet initial attempt with Auth token',
+    );
+    $expectClassifierFailureCase($optionalHmacConfig, 'https://accept.paymob.com/api/unsupported', [
+        'api_key' => 'synthetic-api-key',
+    ], 'unknown Paymob path');
+    $expectClassifierFailureCase($optionalHmacConfig, 'https://invalid.example/api/auth/tokens', [
+        'api_key' => 'synthetic-api-key',
+    ], 'non-Paymob URL');
+    $expectClassifierFailureCase($optionalHmacConfig, 'http://accept.paymob.com/api/auth/tokens', [
+        'api_key' => 'synthetic-api-key',
+    ], 'non-HTTPS URL');
+    $expectClassifierFailureCase($optionalHmacConfig, $authUrl, 'not-an-object', 'unexpected top-level request type');
+
+    $inconsistentWalletRetryClient = $createCapturingClient($walletRecoveryConfigDTO);
+    verify(
+        $inconsistentWalletRetryClient->classifyAttemptStage($paymentUrl, $walletInitialRequest)
+            === 'wallet-initiation',
+        'Wallet initial attempt setup for retry-shape regression failed.',
+    );
+    $expectClassificationFailure(
+        $inconsistentWalletRetryClient,
+        $paymentUrl,
+        $walletInitialRequest,
+        'Wallet retry missing Auth token',
+    );
+    $classifierFailureCases++;
+
+    $thirdOrderClient = $createCapturingClient($orderOnlyConfigDTO);
+    foreach (['order', 'order-retry'] as $expectedOrderStage) {
+        verify(
+            $thirdOrderClient->classifyAttemptStage($orderUrl, $makeSyntheticOrderRequest(
+                'synthetic-order-auth-token',
+                'synthetic-order-reference',
+            )) === $expectedOrderStage,
+            'Order attempt counter setup did not classify its first two attempts.',
+        );
+    }
+    $expectClassificationFailure($thirdOrderClient, $orderUrl, $makeSyntheticOrderRequest(
+        'synthetic-order-auth-token',
+        'synthetic-order-reference',
+    ), 'third Order attempt');
+    $classifierFailureCases++;
+
+    $thirdPaymentKeyClient = $createCapturingClient($cardPaymentKeyConfigDTO);
+    foreach (['payment-key-card', 'payment-key-card-retry'] as $expectedPaymentKeyStage) {
+        verify(
+            $thirdPaymentKeyClient->classifyAttemptStage(
+                $paymentKeyUrl,
+                $makeSyntheticPaymentKeyRequest((int)$cardIntegrationId, 'synthetic-card-auth-token'),
+            ) === $expectedPaymentKeyStage,
+            'Payment Key attempt counter setup did not classify its first two attempts.',
+        );
+    }
+    $expectClassificationFailure(
+        $thirdPaymentKeyClient,
+        $paymentKeyUrl,
+        $cardPaymentKeyExchange[1],
+        'third Payment Key attempt',
+    );
+    $classifierFailureCases++;
+
+    $thirdKioskPaymentClient = $createCapturingClient($kioskConfigDTO);
+    foreach (['kiosk-payment', 'kiosk-payment-retry'] as $expectedKioskStage) {
+        verify(
+            $thirdKioskPaymentClient->classifyAttemptStage($paymentUrl, $kioskDTORequest) === $expectedKioskStage,
+            'Kiosk Pay attempt counter setup did not classify its first two attempts.',
+        );
+    }
+    $expectClassificationFailure($thirdKioskPaymentClient, $paymentUrl, $kioskDTORequest, 'third Kiosk Pay attempt');
+    $classifierFailureCases++;
+
+    $thirdWalletPaymentClient = $createCapturingClient($walletRecoveryConfigDTO);
+    verify(
+        $thirdWalletPaymentClient->classifyAttemptStage($paymentUrl, $walletInitialRequest) === 'wallet-initiation',
+        'Wallet Pay attempt counter setup did not classify its initial attempt.',
+    );
+    verify(
+        $thirdWalletPaymentClient->classifyAttemptStage($paymentUrl, $walletPaymentRetryRequest)
+            === 'wallet-initiation-retry',
+        'Wallet Pay attempt counter setup did not classify its retry.',
+    );
+    $expectClassificationFailure(
+        $thirdWalletPaymentClient,
+        $paymentUrl,
+        $walletPaymentRetryRequest,
+        'third Wallet Pay attempt',
+    );
+    $classifierFailureCases++;
+    verify($classifierFailureCases === 15, 'Not all required fail-closed classifier regressions were exercised.');
+    echo "PASS 15 malformed, mismatched, unsupported, or third-attempt fail-closed cases\n";
 
     $kioskRecoveryDirectory = $makeKioskRecoveryDirectory('four-stage');
     $writeKioskRecoveryRun($kioskRecoveryDirectory, $kioskFourExchangeRun);
@@ -1564,6 +2113,7 @@ JSON;
         $kioskRecoveryResult['result'] === 'PASS'
         && $kioskRecoveryResult['scenario'] === 'kiosk'
         && $kioskRecoveryResult['exchange_count'] === 4
+        && $kioskRecoveryResult['recovered_stages'] === $kioskLiveStages
         && $kioskRecoveryResult['recovered_stages'] === [
             'auth', 'order', 'payment-key-kiosk', 'kiosk-payment',
         ]
@@ -1744,6 +2294,13 @@ JSON;
             $syntheticKioskResponse,
         ],
     ];
+    $kioskRetryLiveStages = $classifyWithCapturingClient($kioskConfigDTO, $kioskRetryExchanges);
+    verify(
+        $kioskRetryLiveStages === [
+            'auth', 'order', 'payment-key-kiosk', 'kiosk-payment', 'auth', 'kiosk-payment-retry',
+        ],
+        'Shared live classifier did not derive the synthetic Kiosk Pay retry sequence.',
+    );
     $kioskRetryDirectory = $makeKioskRecoveryDirectory('retry');
     $writeKioskRecoveryRun($kioskRetryDirectory, $kioskRetryExchanges);
     $kioskRetrySourceSnapshot = $snapshotSourceRun($kioskRetryDirectory);
@@ -1762,6 +2319,7 @@ JSON;
         $kioskRetryResult['result'] === 'PASS'
         && $kioskRetryResult['scenario'] === 'kiosk'
         && $kioskRetryResult['exchange_count'] === 6
+        && $kioskRetryResult['recovered_stages'] === $kioskRetryLiveStages
         && $kioskRetryResult['recovered_stages'] === [
             'auth', 'order', 'payment-key-kiosk', 'kiosk-payment', 'auth', 'kiosk-payment-retry',
         ],
@@ -2034,6 +2592,16 @@ JSON;
     if ($syntheticKioskConfigDirectory !== null && is_dir($syntheticKioskConfigDirectory)
         && !rmdir($syntheticKioskConfigDirectory)) {
         $failure ??= new RuntimeException('Synthetic Kiosk configuration directory cleanup failed.');
+    }
+    if ($syntheticPaymentKeyConfigDirectory !== null
+        && is_file($syntheticPaymentKeyConfigDirectory . DIRECTORY_SEPARATOR . '.env')) {
+        if (!unlink($syntheticPaymentKeyConfigDirectory . DIRECTORY_SEPARATOR . '.env')) {
+            $failure ??= new RuntimeException('Synthetic Payment Key configuration cleanup failed.');
+        }
+    }
+    if ($syntheticPaymentKeyConfigDirectory !== null && is_dir($syntheticPaymentKeyConfigDirectory)
+        && !rmdir($syntheticPaymentKeyConfigDirectory)) {
+        $failure ??= new RuntimeException('Synthetic Payment Key configuration directory cleanup failed.');
     }
 }
 

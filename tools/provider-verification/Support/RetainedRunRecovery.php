@@ -15,8 +15,6 @@ final class RetainedRunRecovery
 
     private string $scenario = 'unsupported';
 
-    private int $kioskPaymentAttemptCount = 0;
-
     private ?string $sourceDirectory = null;
 
     private ?SemanticSanitizer $sanitizer = null;
@@ -86,7 +84,7 @@ final class RetainedRunRecovery
         if ($scenario === 'kiosk' && $config->kioskIntegrationId === null) {
             throw new RuntimeException('Kiosk recovery configuration is incomplete.');
         }
-        $integrationId = $scenario === 'wallet' ? $config->walletIntegrationId : $config->kioskIntegrationId;
+        $attemptStageClassifier = ProviderAttemptStageClassifier::fromConfig($config);
         $this->sanitizer = new SemanticSanitizer(
             $config->configuredSecrets(),
             $scenario === 'wallet' ? $config->walletTestMsisdn : null,
@@ -108,7 +106,7 @@ final class RetainedRunRecovery
                 throw new RuntimeException('A retained request URL is empty or invalid.');
             }
 
-            $stage = $this->deriveStage($urlBytes, $request, $scenario, (string)$integrationId);
+            $stage = $attemptStageClassifier->classify($urlBytes, $request);
             $decoded[] = [
                 'sequence' => (int)$sequence,
                 'stage' => $stage,
@@ -340,54 +338,6 @@ final class RetainedRunRecovery
         }
 
         return $contents;
-    }
-
-    private function deriveStage(string $url, mixed $request, string $scenario, string $integrationId): string
-    {
-        if (!$request instanceof stdClass) {
-            throw new RuntimeException('A retained request body is not a JSON object.');
-        }
-        $parts = parse_url($url);
-        if (!is_array($parts) || ($parts['scheme'] ?? null) !== 'https'
-            || ($parts['host'] ?? null) !== 'accept.paymob.com') {
-            throw new RuntimeException('A retained request URL failed the provider host guard.');
-        }
-        $path = $parts['path'] ?? '';
-        if ($path === '/api/auth/tokens' && property_exists($request, 'api_key')) {
-            return 'auth';
-        }
-        if ($path === '/api/ecommerce/orders') {
-            return 'order';
-        }
-        if ($path === '/api/acceptance/payment_keys'
-            && property_exists($request, 'integration_id')
-            && (string)$request->integration_id === $integrationId) {
-            return $scenario === 'kiosk' ? 'payment-key-kiosk' : 'payment-key-wallet';
-        }
-        if ($scenario === 'kiosk'
-            && $path === '/api/acceptance/payments/pay'
-            && isset($request->source) && $request->source instanceof stdClass
-            && ($request->source->identifier ?? null) === 'AGGREGATOR'
-            && ($request->source->subtype ?? null) === 'AGGREGATOR'
-            && property_exists($request, 'payment_token')
-            && property_exists($request, 'auth_token')) {
-            $this->kioskPaymentAttemptCount++;
-            return match ($this->kioskPaymentAttemptCount) {
-                1 => 'kiosk-payment',
-                2 => 'kiosk-payment-retry',
-                default => throw new RuntimeException('The retained run contains too many Kiosk payment attempts.'),
-            };
-        }
-        if ($scenario === 'wallet'
-            && $path === '/api/acceptance/payments/pay'
-            && isset($request->source) && $request->source instanceof stdClass
-            && isset($request->source->subtype) && $request->source->subtype === 'WALLET') {
-            return property_exists($request, 'auth_token')
-                ? 'wallet-initiation-retry'
-                : 'wallet-initiation';
-        }
-
-        throw new RuntimeException('A retained exchange could not be classified deterministically.');
     }
 
     private function topLevelKeys(mixed $value): array

@@ -31,6 +31,7 @@ require_once $repositoryRoot . '/vendor/autoload.php';
 require_once __DIR__ . '/Support/VerificationConfig.php';
 require_once __DIR__ . '/Support/CaptureSession.php';
 require_once __DIR__ . '/Support/SemanticSanitizer.php';
+require_once __DIR__ . '/Support/ProviderAttemptStageClassifier.php';
 require_once __DIR__ . '/Support/RetainedRunRecovery.php';
 
 /** Run one explicit provider verification scenario and emit its safe report. */

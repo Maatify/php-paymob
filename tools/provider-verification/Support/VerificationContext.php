@@ -42,7 +42,8 @@ final class VerificationContext
         try {
             $config = VerificationConfig::load($repositoryRoot, $scenario, $paymentMethod);
             $captureSession = new CaptureSession($config->repositoryRoot);
-            $apiClient = new CapturingApiClient($config->baseUrl, $captureSession);
+            $attemptStageClassifier = ProviderAttemptStageClassifier::fromConfig($config);
+            $apiClient = new CapturingApiClient($config->baseUrl, $captureSession, $attemptStageClassifier);
             $context = new self($config, $captureSession, $apiClient, new InMemoryTokenRepository());
             $report = $context->execute();
             $context->stage = 'sanitize-report';
@@ -318,7 +319,6 @@ final class VerificationContext
     private function setStage(string $stage): void
     {
         $this->stage = $stage;
-        $this->apiClient->setStage($stage);
     }
 
     private function assertSafeOutput(array $report, SemanticSanitizer $sanitizer): void
