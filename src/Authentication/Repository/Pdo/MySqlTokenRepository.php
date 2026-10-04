@@ -8,6 +8,7 @@ use Maatify\Paymob\Authentication\DTO\TokenResponseDTO;
 use Maatify\Paymob\Authentication\Repository\TokenRepositoryInterface;
 use Maatify\Paymob\Authentication\ValueObject\TokenScope;
 use Maatify\Paymob\Exception\OptionalCapabilityUnavailableException;
+use Maatify\Paymob\Exception\TokenStorageException;
 use PDO;
 
 final readonly class MySqlTokenRepository implements TokenRepositoryInterface
@@ -31,7 +32,37 @@ final readonly class MySqlTokenRepository implements TokenRepositoryInterface
         $statement->execute(['scope_key' => $scope->value()]);
         $row = $statement->fetch(PDO::FETCH_ASSOC);
         if ($row === false) return null;
-        return new TokenResponseDTO((string) $row['token'], (int) $row['profile_id'], (int) $row['issued_at'], (int) $row['expires_at']);
+        if (!is_array($row)) throw new TokenStorageException('Stored Paymob token row is malformed.');
+
+        $token = $row['token'] ?? null;
+        $profileIdValue = $row['profile_id'] ?? null;
+        $issuedAtValue = $row['issued_at'] ?? null;
+        $expiresAtValue = $row['expires_at'] ?? null;
+
+        if (!is_string($token) || trim($token) === '') {
+            throw new TokenStorageException('Stored Paymob token is malformed.');
+        }
+
+        $profileId = self::storedInteger($profileIdValue, 'profile_id');
+        $issuedAt = self::storedInteger($issuedAtValue, 'issued_at');
+        $expiresAt = self::storedInteger($expiresAtValue, 'expires_at');
+        if ($profileId <= 0 || $issuedAt < 0 || $expiresAt <= $issuedAt) {
+            throw new TokenStorageException('Stored Paymob token timestamps or profile identity are invalid.');
+        }
+
+        return new TokenResponseDTO($token, $profileId, $issuedAt, $expiresAt);
+    }
+
+    private static function storedInteger(mixed $value, string $field): int
+    {
+        if (is_int($value)) return $value;
+        if (!is_string($value) || preg_match('/\A(?:0|[1-9][0-9]*)\z/D', $value) !== 1) {
+            throw new TokenStorageException("Stored Paymob {$field} is malformed.");
+        }
+
+        $integer = filter_var($value, FILTER_VALIDATE_INT);
+        if (!is_int($integer)) throw new TokenStorageException("Stored Paymob {$field} is out of range.");
+        return $integer;
     }
 
     public function save(TokenScope $scope, TokenResponseDTO $token): void

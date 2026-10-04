@@ -13,12 +13,17 @@ use Maatify\Paymob\Adapter\ResponseDecoder;
 use Maatify\Paymob\Authentication\DTO\TokenResponseDTO;
 use Maatify\Paymob\Authentication\Repository\FileTokenRepository;
 use Maatify\Paymob\Authentication\Repository\InMemoryTokenRepository;
+use Maatify\Paymob\Authentication\Repository\Pdo\MySqlTokenRepository;
 use Maatify\Paymob\Authentication\Service\AuthService;
 use Maatify\Paymob\Authentication\ValueObject\TokenScope;
 use Maatify\Paymob\Config\PaymobConfig;
 use Maatify\Paymob\Exception\ApiException;
 use Maatify\Paymob\Exception\NetworkException;
+use Maatify\Paymob\Exception\NotFoundException;
 use Maatify\Paymob\Exception\OptionalCapabilityUnavailableException;
+use Maatify\Paymob\Exception\RateLimitException;
+use Maatify\Paymob\Exception\ServiceUnavailableException;
+use Maatify\Paymob\Exception\TokenStorageException;
 use Maatify\Paymob\Exception\UnauthorizedException;
 use Maatify\Paymob\Order\Command\CreateOrderCommand;
 use Maatify\Paymob\Order\Service\OrderService;
@@ -193,6 +198,73 @@ final class RuntimeSecuritySystemTest extends TestCase
         catch (NetworkException $e) { self::assertSame('network', $e->getMessage()); }
     }
 
+    public function testNonJsonProviderFailuresKeepTypedClassificationStatusAndRawBody(): void
+    {
+        $expectedClasses = [
+            400 => ApiException::class,
+            401 => UnauthorizedException::class,
+            404 => NotFoundException::class,
+            429 => RateLimitException::class,
+            500 => ServiceUnavailableException::class,
+        ];
+
+        foreach ($expectedClasses as $status => $expectedClass) {
+            $body = "plain provider failure {$status}";
+            try {
+                ResponseDecoder::decode($status, $body);
+                self::fail("Expected non-JSON provider failure for HTTP {$status}.");
+            } catch (ApiException $exception) {
+                self::assertSame($expectedClass, $exception::class);
+                self::assertSame($status, $exception->getProviderStatusCode());
+                self::assertSame($body, $exception->getResponse());
+            }
+        }
+    }
+
+    public function testMySqlTokenHydrationValidatesStoredMixedValuesBeforeConversion(): void
+    {
+        $config = new PaymobConfig('key', 'hmac', 1, 2, 3);
+        $scope = TokenScope::fromConfig($config);
+        $valid = ['token' => 'cached-token', 'profile_id' => '42', 'issued_at' => 0, 'expires_at' => '3600'];
+        $token = (new MySqlTokenRepository(new HydrationTestPDO($valid)))->get($scope);
+        self::assertNotNull($token);
+        self::assertSame(['cached-token', 42, 0, 3600], [$token->token, $token->profileId, $token->issuedAt, $token->expiresAt]);
+
+        $invalidRows = [
+            ['token' => [], 'profile_id' => 42, 'issued_at' => 0, 'expires_at' => 1],
+            ['token' => '', 'profile_id' => 42, 'issued_at' => 0, 'expires_at' => 1],
+            ['token' => '   ', 'profile_id' => 42, 'issued_at' => 0, 'expires_at' => 1],
+            ['token' => 'token', 'profile_id' => true, 'issued_at' => 0, 'expires_at' => 1],
+            ['token' => 'token', 'profile_id' => 1.0, 'issued_at' => 0, 'expires_at' => 1],
+            ['token' => 'token', 'profile_id' => null, 'issued_at' => 0, 'expires_at' => 1],
+            ['token' => 'token', 'profile_id' => '01', 'issued_at' => 0, 'expires_at' => 1],
+            ['token' => 'token', 'profile_id' => '+1', 'issued_at' => 0, 'expires_at' => 1],
+            ['token' => 'token', 'profile_id' => '1.0', 'issued_at' => 0, 'expires_at' => 1],
+            ['token' => 'token', 'profile_id' => '1e0', 'issued_at' => 0, 'expires_at' => 1],
+            ['token' => 'token', 'profile_id' => '999999999999999999999999999999', 'issued_at' => 0, 'expires_at' => 1],
+            ['token' => 'token', 'profile_id' => 0, 'issued_at' => 0, 'expires_at' => 1],
+            ['token' => 'token', 'profile_id' => 1, 'issued_at' => -1, 'expires_at' => 1],
+            ['token' => 'token', 'profile_id' => 1, 'issued_at' => false, 'expires_at' => 1],
+            ['token' => 'token', 'profile_id' => 1, 'issued_at' => '1e0', 'expires_at' => 2],
+            ['token' => 'token', 'profile_id' => 1, 'issued_at' => '999999999999999999999999999999', 'expires_at' => 999999999999],
+            ['token' => 'token', 'profile_id' => 1, 'issued_at' => 1, 'expires_at' => 1],
+            ['token' => 'token', 'profile_id' => 1, 'issued_at' => 1, 'expires_at' => 0],
+            ['token' => 'token', 'profile_id' => 1, 'issued_at' => 0, 'expires_at' => 1.0],
+            ['token' => 'token', 'profile_id' => 1, 'issued_at' => 0, 'expires_at' => null],
+            ['token' => 'token', 'profile_id' => 1, 'issued_at' => 0, 'expires_at' => '1.0'],
+            ['token' => 'token', 'profile_id' => 1, 'issued_at' => 0, 'expires_at' => '999999999999999999999999999999'],
+        ];
+
+        foreach ($invalidRows as $row) {
+            try {
+                (new MySqlTokenRepository(new HydrationTestPDO($row)))->get($scope);
+                self::fail('Malformed persisted token row must fail explicitly.');
+            } catch (TokenStorageException) {
+                self::assertTrue(true);
+            }
+        }
+    }
+
     public function testOrderOne401RecoveryPerformsOnlyOneReplay(): void
     {
         $config = new PaymobConfig('key', 'hmac', 1, 2, 3);
@@ -338,5 +410,35 @@ final class QueueApiClient implements ApiClientInterface
         if ($value instanceof \Throwable) throw $value;
         if (!is_array($value)) throw new RuntimeException('No queued fake response.');
         return $value;
+    }
+}
+
+final class HydrationTestPDO extends \PDO
+{
+    public function __construct(private readonly mixed $row) {}
+
+    public function getAttribute(int $attribute): mixed
+    {
+        return $attribute === self::ATTR_DRIVER_NAME ? 'mysql' : null;
+    }
+
+    public function prepare(string $query, array $options = []): \PDOStatement|false
+    {
+        return new HydrationTestPDOStatement($this->row);
+    }
+}
+
+final class HydrationTestPDOStatement extends \PDOStatement
+{
+    public function __construct(private readonly mixed $row) {}
+
+    public function execute(?array $params = null): bool
+    {
+        return true;
+    }
+
+    public function fetch(int $mode = \PDO::FETCH_DEFAULT, int $cursorOrientation = \PDO::FETCH_ORI_NEXT, int $cursorOffset = 0): mixed
+    {
+        return $this->row;
     }
 }

@@ -36,6 +36,7 @@ $facade = new PaymobFacade(
     config : $bootstrap->config,
     http   : $bootstrap->client,
     repo   : $repo,
+    clock  : $bootstrap->clock,
     logger : $bootstrap->logger,
 );
 try {

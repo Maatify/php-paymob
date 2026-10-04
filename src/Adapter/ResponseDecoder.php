@@ -6,6 +6,10 @@ namespace Maatify\Paymob\Adapter;
 
 use JsonException;
 use Maatify\Paymob\Exception\ApiException;
+use Maatify\Paymob\Exception\NotFoundException;
+use Maatify\Paymob\Exception\RateLimitException;
+use Maatify\Paymob\Exception\ServiceUnavailableException;
+use Maatify\Paymob\Exception\UnauthorizedException;
 use Maatify\Paymob\Factory\PaymobExceptionFactory;
 
 /** @internal Shared built-in transport response classification. */

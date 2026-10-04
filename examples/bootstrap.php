@@ -49,7 +49,6 @@ return (function (): PaymobExampleBootstrap {
     ));
 
     // Config setup
-    // expireAt = minutes
 
     $config = new PaymobConfig(
         apiKey             : $_ENV['PAYMOB_API_KEY'],
