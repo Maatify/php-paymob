@@ -535,6 +535,10 @@ $response = $handler->parse($_GET);
 
 PHP converts dotted query parameter names to underscores in `$_GET`. For example, `source_data.type` becomes `source_data_type`, and `data.message` becomes `data_message`. Pass the PHP-normalized `$_GET` array to `parse()`; it validates the signed fields and HMAC before returning the result DTO.
 
+Paymob's Transaction Response sample uses `order`, while its HMAC documentation also names `order_id` for the Response GET query. The handler accepts either non-empty string. If both keys are present, their values must match. The same validated order value occupies the existing HMAC position and becomes `orderId` in the DTO; `order.id` is not a supported PHP GET array key.
+
+`data.message` / `data_message` maps to the DTO's `message`, but it is **not** among the 20 HMAC-signed Transaction Response fields. Treat the message as advisory, unsigned provider-return text; do not make payment or order decisions from it.
+
 The Transaction Response Callback is for customer-facing result and redirect handling. Do **not** use it as the authoritative source for updating order or payment status. Use the validated Transaction Processed Callback for authoritative server-side state.
 
 ---

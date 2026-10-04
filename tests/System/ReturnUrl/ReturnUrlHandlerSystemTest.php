@@ -28,7 +28,7 @@ final class ReturnUrlHandlerSystemTest extends TestCase
         . '&source_data.pan=2346&source_data.sub_type=MasterCard'
         . '&source_data.type=card&success=true&data.message=Approved';
 
-    public function testValidPhpNormalizedResponseCallbackReturnsMappedDto(): void
+    public function testValidOrderOnlyPhpNormalizedResponseCallbackReturnsMappedDto(): void
     {
         $query = $this->validQuery();
 
@@ -37,6 +37,7 @@ final class ReturnUrlHandlerSystemTest extends TestCase
         }
 
         self::assertArrayNotHasKey('order.id', $query);
+        self::assertArrayNotHasKey('order_id', $query);
         self::assertArrayNotHasKey('source_data.pan', $query);
         self::assertArrayNotHasKey('data.message', $query);
         self::assertSame('378804', $query['order']);
@@ -55,6 +56,115 @@ final class ReturnUrlHandlerSystemTest extends TestCase
         self::assertFalse($result->pending);
         self::assertSame('Approved', $result->message);
         self::assertSame($query['hmac'], $result->hmac);
+    }
+
+    public function testOrderIdOnlyUsesTheSameLiteralCanonicalHmacAsOrderOnly(): void
+    {
+        $orderOnlyQuery = $this->validQuery();
+        $rawQuery = str_replace('&order=378804&', '&order_id=378804&', self::RAW_QUERY)
+            . '&hmac=' . hash_hmac('sha512', self::EXPECTED_CANONICAL, self::HMAC_SECRET);
+        parse_str($rawQuery, $orderIdQuery);
+
+        self::assertArrayNotHasKey('order', $orderIdQuery);
+        self::assertSame('378804', $orderIdQuery['order_id']);
+        self::assertSame($orderOnlyQuery['hmac'], $orderIdQuery['hmac']);
+
+        $orderOnlyResult = $this->handler()->parse($orderOnlyQuery);
+        $orderIdResult = $this->handler()->parse($orderIdQuery);
+
+        self::assertSame(378804, $orderOnlyResult->orderId);
+        self::assertSame(378804, $orderIdResult->orderId);
+        self::assertSame($orderOnlyResult->hmac, $orderIdResult->hmac);
+    }
+
+    public function testBothOrderKeysWithEqualValuesAreAccepted(): void
+    {
+        $query = $this->validQuery();
+        $query['order_id'] = '378804';
+
+        $result = $this->handler()->parse($query);
+
+        self::assertSame(378804, $result->orderId);
+        self::assertSame($query['hmac'], $result->hmac);
+    }
+
+    public function testBothOrderKeysWithDifferentValuesAreRejected(): void
+    {
+        $query = $this->validQuery();
+        $query['order_id'] = '999999';
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('Conflicting order query values');
+
+        $this->handler()->parse($query);
+    }
+
+    public function testNeitherOrderKeyIsRejected(): void
+    {
+        $query = $this->validQuery();
+        unset($query['order']);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('Missing order query value');
+
+        $this->handler()->parse($query);
+    }
+
+    #[DataProvider('invalidOrderValues')]
+    public function testNonStringOrderValueIsRejected(string $key, mixed $value): void
+    {
+        $query = $this->validQuery();
+        if ($key === 'order_id') {
+            unset($query['order']);
+        }
+        $query[$key] = $value;
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage("Invalid {$key} query value");
+
+        $this->handler()->parse($query);
+    }
+
+    public static function invalidOrderValues(): iterable
+    {
+        foreach (['order', 'order_id'] as $key) {
+            yield "{$key} as integer" => [$key, 378804];
+            yield "{$key} as array" => [$key, ['378804']];
+            yield "{$key} as null" => [$key, null];
+        }
+    }
+
+    #[DataProvider('orderKeys')]
+    public function testEmptyCanonicalOrderValueIsRejected(string $key): void
+    {
+        $query = $this->validQuery();
+        if ($key === 'order_id') {
+            unset($query['order']);
+        }
+        $query[$key] = '';
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage("Invalid {$key} query value");
+
+        $this->handler()->parse($query);
+    }
+
+    public static function orderKeys(): iterable
+    {
+        yield 'order' => ['order'];
+        yield 'order_id' => ['order_id'];
+    }
+
+    public function testDataMessageCanChangeWithoutChangingTheValidHmac(): void
+    {
+        $query = $this->validQuery();
+        $originalHmac = $query['hmac'];
+        $query['data_message'] = 'Updated advisory message';
+
+        $result = $this->handler()->parse($query);
+
+        self::assertSame($originalHmac, $result->hmac);
+        self::assertSame('Updated advisory message', $result->message);
     }
 
     public function testValidPendingResponseMapsBothBooleanValues(): void

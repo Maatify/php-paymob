@@ -12,7 +12,8 @@ use RuntimeException;
  * Validates Paymob's customer-facing Transaction Response redirect and returns its result.
  *
  * The validated Transaction Processed callback remains the authoritative source for
- * server-side payment and order state changes.
+ * server-side payment and order state changes. The returned data_message is advisory:
+ * Paymob does not include it among the 20 HMAC-signed Transaction Response values.
  */
 final readonly class ReturnUrlHandler
 {
@@ -25,9 +26,12 @@ final readonly class ReturnUrlHandler
      * Parse a PHP-normalized GET query after verifying all signed values and the HMAC.
      *
      * PHP changes dotted wire names to underscores in $_GET: source_data.pan becomes
-     * source_data_pan, and data.message becomes data_message. All 20 signed values,
-     * plus hmac, must be present as strings; success and pending must be exactly
-     * "true" or "false". Invalid input or an empty configured secret fails closed.
+     * source_data_pan, and data.message becomes data_message. The signed order value
+     * may arrive as order or order_id; when both exist they must be identical.
+     * All other signed values and hmac must be strings; the order value and hmac
+     * must also be non-empty. Success and pending must be exactly "true" or "false".
+     * Invalid input or an empty configured secret fails closed. The message is
+     * unsigned and must not drive payment or order state decisions.
      *
      * @throws RuntimeException When the query or HMAC configuration is invalid.
      */
@@ -48,7 +52,26 @@ final readonly class ReturnUrlHandler
             }
         }
 
-        if (!$this->validateHmac($query, $providedHmac)) {
+        $hasOrder = array_key_exists('order', $query);
+        $hasOrderId = array_key_exists('order_id', $query);
+        if (!$hasOrder && !$hasOrderId) {
+            throw new RuntimeException('Missing order query value for return URL');
+        }
+
+        if ($hasOrder && (!is_string($query['order']) || $query['order'] === '')) {
+            throw new RuntimeException('Invalid order query value for return URL');
+        }
+
+        if ($hasOrderId && (!is_string($query['order_id']) || $query['order_id'] === '')) {
+            throw new RuntimeException('Invalid order_id query value for return URL');
+        }
+
+        if ($hasOrder && $hasOrderId && $query['order'] !== $query['order_id']) {
+            throw new RuntimeException('Conflicting order query values for return URL');
+        }
+
+        $canonicalOrder = $hasOrder ? $query['order'] : $query['order_id'];
+        if (!$this->validateHmac($query, $providedHmac, $canonicalOrder)) {
             throw new RuntimeException('Invalid HMAC signature for return URL');
         }
 
@@ -59,7 +82,7 @@ final readonly class ReturnUrlHandler
 
         return new ReturnUrlResponseDTO(
             transactionId: (int) $query['id'],
-            orderId: (int) $query['order'],
+            orderId: (int) $canonicalOrder,
             amountCents: (int) $query['amount_cents'],
             currency: $query['currency'],
             success: $query['success'] === 'true',
@@ -72,13 +95,14 @@ final readonly class ReturnUrlHandler
     /**
      * Concatenate the 20 required PHP-normalized GET strings in Paymob's HMAC order.
      *
-     * Response redirects sign the flat order value and the underscored source_data
-     * keys produced by PHP, rather than order.id or dotted PHP array keys.
-     * Missing or non-string fields cannot contribute an implicit empty value.
+     * The order position uses the validated value from order or order_id, without
+     * signing the key name. Source data uses PHP's underscored keys, not dotted
+     * array keys. data_message is outside these 20 signed values. Missing or
+     * non-string signed fields cannot contribute an implicit empty value.
      *
      * @throws RuntimeException When a signed field is missing or is not a string.
      */
-    private function validateHmac(array $query, string $providedHmac): bool
+    private function validateHmac(array $query, string $providedHmac, string $canonicalOrder): bool
     {
         $fields = [
             'amount_cents',
@@ -105,6 +129,12 @@ final readonly class ReturnUrlHandler
 
         $concatenated = '';
         foreach ($fields as $field) {
+            if ($field === 'order') {
+                $concatenated .= $canonicalOrder;
+
+                continue;
+            }
+
             if (!array_key_exists($field, $query) || !is_string($query[$field])) {
                 throw new RuntimeException("Missing or invalid {$field} query value for return URL");
             }
