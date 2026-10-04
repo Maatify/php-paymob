@@ -19,8 +19,12 @@ use Maatify\Paymob\Service\ReturnUrlHandler;
 $handler = new ReturnUrlHandler($bootstrap->config);
 
 try {
+    // PHP normalizes dotted query names in $_GET:
+    // source_data.type becomes source_data_type; data.message becomes data_message.
     $response = $handler->parse($_GET);
 
+    // Use this Transaction Response Callback for customer-facing result/redirect handling.
+    // Update order/payment state from the validated Transaction Processed Callback instead.
     echo "✅ Transaction: {$response->transactionId}\n";
     echo "✅ Order: {$response->orderId}\n";
     echo "✅ Status: " . ($response->success ? 'Success' : ($response->pending ? 'Pending' : 'Failed')) . "\n";
