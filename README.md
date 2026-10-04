@@ -31,14 +31,14 @@ Provides a clean, PSR-compliant wrapper around Paymob’s REST APIs with **DTOs,
 ## 📦 Installation
 
 ```bash
-composer require maatify/paymob-php:dev-main
+composer require maatify/php-paymob:dev-main
 ````
 
 If the repository is private:
 
 ```bash
-composer config repositories.paymob-php vcs git@github.com:maatify/paymob-php.git
-composer require maatify/paymob-php:dev-main
+composer config repositories.php-paymob vcs git@github.com:Maatify/php-paymob.git
+composer require maatify/php-paymob:dev-main
 ```
 
 ---
@@ -79,8 +79,10 @@ src/
  │    │    ├── KioskPaymentResponseDTO.php
  │    │    ├── WalletPaymentRequestDTO.php
  │    │    └── WalletPaymentResponseDTO.php
- │    └── Transaction/
- │         └── TransactionResponseDTO.php
+ │    ├── Transaction/
+ │    │    └── TransactionResponseDTO.php
+ │    └── Webhook/
+ │         └── ReturnUrlResponseDTO.php
  ├── Enum/
  │    └── CurrencyEnum.php
  ├── Exception/
@@ -108,7 +110,8 @@ src/
  │    ├── PaymentKeyService.php
  │    ├── KioskPaymentService.php
  │    ├── WalletPaymentService.php
- │    └── TransactionService.php
+ │    ├── TransactionService.php
+ │    └── ReturnUrlHandler.php
  ├── Webhook/
  │    ├── WebhookValidator.php
  ├── PaymobConfigDTO.php
@@ -123,6 +126,7 @@ examples/
  ├── wallet.php
  ├── facade_wallet.php
  ├── transaction.php
+ ├── return_url.php
  └── webhook.php
 ```
 
@@ -141,6 +145,7 @@ See [examples](./examples):
 * [Wallet Example](./examples/wallet.php) → Initiate a payment via Wallet (Vodafone Cash, Orange, Etisalat, WE).
 * [Facade Wallet Example](./examples/facade_wallet.php) → Full Wallet flow (Order + Key + Pay) in one call.
 * [Transaction Example](./examples/transaction.php) → Query transaction details by transaction ID.
+* [Return URL Example](./examples/return_url.php) → Validate a customer-facing Transaction Response redirect.
 ---
 
 ### Bootstrap
@@ -485,7 +490,7 @@ echo "Updated At      : {$transaction->updatedAt}\n";
 🌐 Webhooks
 
 Use WebhookValidator to verify Paymob webhook callbacks (e.g., transaction success/failure notifications).
-The validator automatically computes the HMAC using your configured secret and compares it against the payload.
+For a Transaction Processed callback, the JSON request body contains the transaction data and the HMAC is supplied in the query string. Combine both values into one normalized array before calling `validate()`; the validator computes the HMAC using your configured secret and compares it with that query value.
 
 ⚠️ Make sure to set PAYMOB_HMAC_SECRET in your .env.
 
@@ -497,16 +502,44 @@ use Maatify\Paymob\Exception\WebhookException;
 $validator = new WebhookValidator($bootstrap->config);
 
 try {
-    $payload = $validator->validate(
-        json_decode(file_get_contents('php://input'), true)
-    );
+    $body = file_get_contents('php://input');
+    if ($body === false) {
+        throw new RuntimeException('Unable to read webhook request body');
+    }
+
+    $payload = json_decode($body, true, 512, JSON_THROW_ON_ERROR);
+    if (!is_array($payload)) {
+        throw new RuntimeException('Webhook JSON body must be an object');
+    }
+
+    $payload['hmac'] = $_GET['hmac'] ?? null;
+    $payload = $validator->validate($payload);
 
     echo "✅ Webhook valid for Transaction #{$payload->transactionId}\n";
-} catch (WebhookException $e) {
+} catch (WebhookException | JsonException | RuntimeException $e) {
     echo "❌ Invalid webhook: " . $e->getMessage();
 }
 
 ```
+
+### Transaction Response Callback (Return URL)
+
+The existing [Return URL example](./examples/return_url.php) handles Paymob's GET redirect with query parameters and an HMAC:
+
+```php
+use Maatify\Paymob\Service\ReturnUrlHandler;
+
+$handler = new ReturnUrlHandler($bootstrap->config);
+$response = $handler->parse($_GET);
+```
+
+PHP converts dotted query parameter names to underscores in `$_GET`. For example, `source_data.type` becomes `source_data_type`, and `data.message` becomes `data_message`. Pass the PHP-normalized `$_GET` array to `parse()`; it validates the signed fields and HMAC before returning the result DTO.
+
+Paymob's Transaction Response sample uses `order`, while its HMAC documentation also names `order_id` for the Response GET query. The handler accepts either non-empty string. If both keys are present, their values must match. The same validated order value occupies the existing HMAC position and becomes `orderId` in the DTO; `order.id` is not a supported PHP GET array key.
+
+`data.message` / `data_message` maps to the DTO's `message`, but it is **not** among the 20 HMAC-signed Transaction Response fields. Treat the message as advisory, unsigned provider-return text; do not make payment or order decisions from it.
+
+The Transaction Response Callback is for customer-facing result and redirect handling. Do **not** use it as the authoritative source for updating order or payment status. Use the validated Transaction Processed Callback for authoritative server-side state.
 
 ---
 ## 🔥 Error Handling
@@ -542,4 +575,3 @@ try {
 
 📌 **Note**: This SDK is under active development (v0.x).
 Expect breaking changes until stable v1.0 release.
-
