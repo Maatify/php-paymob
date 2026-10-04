@@ -60,11 +60,13 @@ final readonly class TransactionResponseDTO implements \JsonSerializable
         }
         $orderId = $data['order']['id'] ?? $data['order_id'] ?? null;
         if (!is_int($orderId) || $orderId <= 0) throw new ApiException('Paymob Transaction response is missing a valid order ID.', null, $data);
+        $currency = CurrencyEnum::tryFrom($data['currency']);
+        if ($currency === null) throw new ApiException('Paymob Transaction response contains an unsupported currency.', null, $data);
         return new self(
             id                 : $data['id'],
             orderId            : $orderId,
             amountCents        : $data['amount_cents'],
-            currency           : CurrencyEnum::from($data['currency']),
+            currency           : $currency,
             success            : $data['success'],
             pending            : $data['pending'],
             isCaptured         : $data['is_captured'],

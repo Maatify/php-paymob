@@ -28,9 +28,9 @@ use Maatify\Paymob\Exception\ValidationException;
 final class PaymobExceptionFactory
 {
     /**
-     * $resp: الرد الكامل اللي رجعه Paymob
-     * $httpStatus: كود HTTP إذا متاح
-     * $context: مثلا 'auth', 'order', 'transaction'
+     * $resp: Full response payload returned by Paymob.
+     * $httpStatus: HTTP status when available.
+     * $context: Operation context such as 'auth', 'order', or 'transaction'.
      */
     public static function fromResponse(
         array $resp,
@@ -62,7 +62,7 @@ final class PaymobExceptionFactory
             in_array($normalized, ['not_found', 'order_not_found', 'transaction_not_found']) =>
             new NotFoundException($message, $httpStatus ?? 0, $resp),
 
-            // Duplicate Reference (مثلاً لو integration ID مستخدم أو orderId)
+            // Duplicate reference, such as an already-used integration ID or order ID.
             in_array($normalized, ['duplicate_reference', 'reference_exists']) =>
             new DuplicateReferenceException($message, $httpStatus ?? 0, $resp),
 
@@ -74,7 +74,7 @@ final class PaymobExceptionFactory
             $httpStatus >= 500 =>
             new ServiceUnavailableException($message, $httpStatus ?? 0, $resp),
 
-            // Default حسب الـ context
+            // Use the exception type associated with the operation context.
             $context === 'auth' =>
             new AuthException($message, $httpStatus ?? 0, $resp),
             $context === 'order' =>

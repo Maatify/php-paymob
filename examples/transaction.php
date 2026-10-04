@@ -36,7 +36,7 @@ $transactionService = new TransactionService($bootstrap->client, $authService);
 //$transactionId = 344212847;
 
 try {
-    // Transaction ID من عملية سابقة
+    // Use a transaction ID returned by an earlier payment.
     $transactionId = 344212847;
 
     $transaction = $transactionService->getTransaction($transactionId);

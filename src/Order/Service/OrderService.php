@@ -11,6 +11,7 @@ use Maatify\Paymob\Order\Command\CreateOrderCommand;
 use Maatify\Paymob\Order\DTO\OrderItemCollectionDTO;
 use Maatify\Paymob\Order\DTO\OrderResponseDTO;
 use Maatify\Paymob\Enum\CurrencyEnum;
+use InvalidArgumentException;
 
 final readonly class OrderService
 {
@@ -30,8 +31,10 @@ final readonly class OrderService
             if (!isset($response[$field]) || get_debug_type($response[$field]) !== $type) throw new ApiException("Paymob order response has an invalid required field: {$field}.", null, $response);
         }
         if ($response['id'] <= 0 || $response['amount_cents'] <= 0) throw new ApiException('Paymob order response contains a non-positive identifier or amount.', null, $response);
+        try { $currency = CurrencyEnum::fromString($response['currency']); }
+        catch (InvalidArgumentException $e) { throw new ApiException('Paymob order response contains an unsupported currency.', null, $response, $e); }
         $items = isset($response['items']) && is_array($response['items']) ? OrderItemCollectionDTO::fromArray($response['items']) : null;
-        return new OrderResponseDTO($response['id'], $response['created_at'], CurrencyEnum::fromString($response['currency']),
+        return new OrderResponseDTO($response['id'], $response['created_at'], $currency,
             $response['amount_cents'], $response['merchant_order_id'] ?? null, $items, $response);
     }
 }

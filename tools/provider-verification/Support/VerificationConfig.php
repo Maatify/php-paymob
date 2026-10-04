@@ -27,8 +27,8 @@ final readonly class VerificationConfig
     ) {}
 
     /**
-     * Read the local .env without displaying values and validate only inputs
-     * required by the requested scenario.
+     * Read the local .env without displaying values and validate package credentials,
+     * integration configuration, and the additional inputs required by the scenario.
      */
     public static function load(string $repositoryRoot, string $scenario, ?string $paymentMethod = null): self
     {
@@ -106,7 +106,6 @@ final readonly class VerificationConfig
     /** Build the package configuration while leaving unused integration IDs unselected. */
     public function packageConfig(): PaymobConfig
     {
-        // PaymobConfig requires all IDs; zero fills only fields unused by this scenario.
         return new PaymobConfig(
             $this->apiKey,
             $this->hmacSecret,

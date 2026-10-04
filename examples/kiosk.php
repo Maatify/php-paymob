@@ -84,7 +84,7 @@ try {
     // Step 3: Generate Payment Key
     $paymentKeyRequest = new GeneratePaymentKeyCommand(
         orderId      : $orderResponse->id,
-        integrationId: $bootstrap->config->integrationIdKiosk, // 👈 مهم نستخدم Integration ID بتاع الكشك
+        integrationId: $bootstrap->config->integrationIdKiosk, // Use the Kiosk integration ID.
         amountCents  : $orderResponse->amountCents,
         currency     : $orderResponse->currency,
         billingData  : $billing

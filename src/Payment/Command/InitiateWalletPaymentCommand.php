@@ -8,9 +8,12 @@ use InvalidArgumentException;
 
 final readonly class InitiateWalletPaymentCommand
 {
-    public function __construct(public string $paymentToken, public string $phoneNumber)
+    public string $phoneNumber;
+
+    public function __construct(public string $paymentToken, string $phoneNumber)
     {
         if (trim($paymentToken) === '' || trim($phoneNumber) === '') throw new InvalidArgumentException('paymentToken and phoneNumber must not be empty.');
+        $this->phoneNumber = trim($phoneNumber);
     }
 
     public function toArray(): array

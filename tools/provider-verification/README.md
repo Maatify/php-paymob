@@ -1,6 +1,6 @@
 # Paymob provider verification
 
-This maintained CLI tooling verifies explicitly selected Paymob provider flows through the package's current services and request DTOs. The verification transport captures request and response evidence outside the repository and saves a sanitized report and response fixture candidate.
+This maintained CLI tooling verifies explicitly selected Paymob provider flows through the package's current Services and Commands. The verification transport captures request and response evidence outside the repository and saves a sanitized report and response fixture candidate.
 
 This tooling is separate from the Unit Test suite: it makes real HTTP requests to the Paymob Egypt API and exercises provider behavior. Test and Live modes use the same API base URL; credentials and integration IDs determine the configured mode. It is also separate from the Consumer Verification Harness, which validates a package consumer's integration with a published package. These scripts use the current repository source.
 
@@ -10,11 +10,11 @@ Execution is manual and explicit. Each flow can create provider-side orders or t
 
 Requirements:
 
-- PHP 8.2 or later, Composer dependencies installed, and the cURL extension.
-- A repository-local `.env` with `PAYMOB_API_KEY` and `PAYMOB_BASE_URL`.
+- PHP 8.4 or later, Composer dependencies installed, and the cURL extension.
+- A repository-local `.env` with `PAYMOB_API_KEY`, `PAYMOB_HMAC_SECRET`, all three integration IDs, and `PAYMOB_BASE_URL`.
 - `PAYMOB_BASE_URL` normalizes to `https://accept.paymob.com/api`.
-- `PAYMOB_HMAC_SECRET` is optional for Auth, Order, Payment Key, Kiosk, and Wallet verification. Webhook/HMAC verification requirements will be set when those contracts are in scope.
-- The selected payment flow's integration ID: `PAYMOB_INTEGRATION_ID_CARD`, `PAYMOB_INTEGRATION_ID_KIOSK`, or `PAYMOB_INTEGRATION_ID_WALLET`.
+- All configured integration IDs are positive: `PAYMOB_INTEGRATION_ID_CARD`, `PAYMOB_INTEGRATION_ID_KIOSK`, and `PAYMOB_INTEGRATION_ID_WALLET`.
+- The package configuration requires a non-empty `PAYMOB_HMAC_SECRET` for every flow.
 - Wallet flow only: `PAYMOB_TEST_WALLET_MSISDN=01010101010`, the approved public test input.
 - Transaction Inquiry only: `PAYMOB_TEST_TRANSACTION_ID`, a positive existing Transaction ID supplied locally. No integration ID or Wallet MSISDN is needed.
 

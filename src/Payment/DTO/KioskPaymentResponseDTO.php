@@ -45,12 +45,14 @@ final readonly class KioskPaymentResponseDTO implements \JsonSerializable
             || !isset($response['order']['merchant_order_id']) || !is_string($response['order']['merchant_order_id'])) {
             throw new ApiException('Paymob Kiosk response contains invalid required fields.', null, $response);
         }
+        $currency = CurrencyEnum::tryFrom($response['currency']);
+        if ($currency === null) throw new ApiException('Paymob Kiosk response contains an unsupported currency.', null, $response);
         return new self(
             transactionId  : (int)$response['id'],
             orderId        : $response['order']['id'],
             merchantOrderId: $response['order']['merchant_order_id'],
             amountCents    : $response['amount_cents'],
-            currency       : CurrencyEnum::from($response['currency']),
+            currency       : $currency,
             pending        : $response['pending'],
             success        : $response['success'],
             billReference  : $response['data']['bill_reference'] ?? null,

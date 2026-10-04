@@ -23,7 +23,8 @@ final readonly class FileTokenRepository implements TokenRepositoryInterface
             try { $data = json_decode($json, true, 512, JSON_THROW_ON_ERROR); }
             catch (JsonException $e) { throw new TokenStorageException('Token cache contains malformed JSON.', previous: $e); }
             if (!is_array($data) || !isset($data['token'], $data['profile_id'], $data['issued_at'], $data['expires_at'])
-                || !is_string($data['token']) || !is_int($data['profile_id']) || !is_int($data['issued_at']) || !is_int($data['expires_at'])) {
+                || !is_string($data['token']) || $data['token'] === '' || !is_int($data['profile_id']) || $data['profile_id'] <= 0
+                || !is_int($data['issued_at']) || !is_int($data['expires_at'])) {
                 throw new TokenStorageException('Token cache is missing valid required fields.');
             }
             return new TokenResponseDTO($data['token'], $data['profile_id'], $data['issued_at'], $data['expires_at']);

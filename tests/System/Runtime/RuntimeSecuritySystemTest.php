@@ -7,6 +7,8 @@ namespace Maatify\Paymob\Tests\System\Runtime;
 use DateTimeImmutable;
 use DateTimeZone;
 use Maatify\Paymob\Adapter\ApiClientInterface;
+use Maatify\Paymob\Adapter\ApiClient;
+use Maatify\Paymob\Adapter\CurlApiClient;
 use Maatify\Paymob\Adapter\ResponseDecoder;
 use Maatify\Paymob\Authentication\DTO\TokenResponseDTO;
 use Maatify\Paymob\Authentication\Repository\FileTokenRepository;
@@ -16,6 +18,7 @@ use Maatify\Paymob\Authentication\ValueObject\TokenScope;
 use Maatify\Paymob\Config\PaymobConfig;
 use Maatify\Paymob\Exception\ApiException;
 use Maatify\Paymob\Exception\NetworkException;
+use Maatify\Paymob\Exception\OptionalCapabilityUnavailableException;
 use Maatify\Paymob\Exception\UnauthorizedException;
 use Maatify\Paymob\Order\Command\CreateOrderCommand;
 use Maatify\Paymob\Order\Service\OrderService;
@@ -61,6 +64,34 @@ final class RuntimeSecuritySystemTest extends TestCase
         self::assertMatchesRegularExpression('/^[a-f0-9]{64}$/', $scope);
     }
 
+    public function testDefaultAdapterAndOptionalMysqlGuardArePackageOwned(): void
+    {
+        $config = new PaymobConfig('key', 'hmac', 1, 2, 3);
+        $client = new ApiClient($config);
+        $property = new \ReflectionProperty($client, 'client');
+        self::assertInstanceOf(CurlApiClient::class, $property->getValue($client));
+        try { new \Maatify\Paymob\Authentication\Repository\Pdo\MySqlTokenRepository(new \stdClass()); self::fail('Invalid MySQL selection must fail closed.'); }
+        catch (OptionalCapabilityUnavailableException) {}
+    }
+
+    public function testApprovedPublicDtoSymbolsAreJsonSerializable(): void
+    {
+        foreach ([
+            TokenResponseDTO::class,
+            \Maatify\Paymob\Order\DTO\OrderItemDTO::class,
+            \Maatify\Paymob\Order\DTO\OrderItemCollectionDTO::class,
+            \Maatify\Paymob\Order\DTO\OrderResponseDTO::class,
+            \Maatify\Paymob\Payment\DTO\PaymentKeyResponseDTO::class,
+            \Maatify\Paymob\Payment\DTO\KioskPaymentResponseDTO::class,
+            \Maatify\Paymob\Payment\DTO\WalletPaymentResponseDTO::class,
+            \Maatify\Paymob\Payment\DTO\KioskFlowResultDTO::class,
+            \Maatify\Paymob\Payment\DTO\WalletFlowResultDTO::class,
+            \Maatify\Paymob\Transaction\DTO\TransactionResponseDTO::class,
+            \Maatify\Paymob\Callback\DTO\WebhookPayloadDTO::class,
+            \Maatify\Paymob\Callback\DTO\ReturnUrlResponseDTO::class,
+        ] as $class) self::assertContains(\JsonSerializable::class, class_implements($class));
+    }
+
     public function testInMemoryTokensAreIsolatedByScope(): void
     {
         $repo = new InMemoryTokenRepository();
@@ -89,6 +120,9 @@ final class RuntimeSecuritySystemTest extends TestCase
         file_put_contents($aFile, '{broken');
         try { $repo->get($a->scope); self::fail('Corrupt JSON must fail closed.'); }
         catch (\Maatify\Paymob\Exception\TokenStorageException) {}
+        file_put_contents($aFile, '{"token":"only"}');
+        try { $repo->get($a->scope); self::fail('Missing required fields must fail closed.'); }
+        catch (\Maatify\Paymob\Exception\TokenStorageException) {}
         $repo->save($a->scope, new TokenResponseDTO('token-a', 1, 10, 20));
         $repo->clear($a->scope);
         self::assertNull($repo->get($a->scope));
@@ -111,6 +145,23 @@ final class RuntimeSecuritySystemTest extends TestCase
         self::assertCount(1, $api->postCalls);
     }
 
+    public function testExpiredAndForcedAuthRefreshReplaceOnlyTheCurrentScope(): void
+    {
+        $config = new PaymobConfig('api-key', 'hmac', 1, 2, 3);
+        $repo = new InMemoryTokenRepository();
+        $scope = TokenScope::fromConfig($config);
+        $otherScope = TokenScope::fromConfig(new PaymobConfig('other-key', 'hmac', 1, 2, 3));
+        $repo->save($scope, new TokenResponseDTO('expired', 1, 1, 999));
+        $repo->save($otherScope, new TokenResponseDTO('other-live', 2, 500, 2000));
+        $api = new QueueApiClient();
+        $api->postQueue = [['token' => 'fresh-one', 'profile' => ['id' => 1]], ['token' => 'fresh-two', 'profile' => ['id' => 1]]];
+        $service = new AuthService($api, $config, $repo, new FixedTestClock(1000));
+        self::assertSame('fresh-one', $service->getToken()->token);
+        self::assertSame('fresh-two', $service->getToken(forceRefresh: true)->token);
+        self::assertSame('other-live', $repo->get($otherScope)?->token);
+        self::assertCount(2, $api->postCalls);
+    }
+
     public function testWallet401IsPropagatedWithoutAuthOrReplay(): void
     {
         $api = new QueueApiClient();
@@ -129,8 +180,13 @@ final class RuntimeSecuritySystemTest extends TestCase
         self::assertSame(['token' => 'x'], ResponseDecoder::decode(201, '{"token":"x"}'));
         foreach ([400, 401, 404, 429, 500] as $status) {
             try { ResponseDecoder::decode($status, '{"message":"no"}'); self::fail("Expected status {$status} failure."); }
-            catch (ApiException $e) { self::assertSame($status, $e->getProviderStatusCode()); }
+            catch (ApiException $e) {
+                self::assertSame($status, $e->getProviderStatusCode());
+                self::assertNotSame($status, $e->getCode());
+            }
         }
+        try { ResponseDecoder::decode(400, '{"error_code":"validation_failed","message":"invalid"}'); self::fail('Validation provider errors retain their named class.'); }
+        catch (\Maatify\Paymob\Exception\ValidationException $e) { self::assertSame(400, $e->getProviderStatusCode()); }
         try { ResponseDecoder::decode(200, '{bad'); self::fail('Malformed successful JSON must fail.'); }
         catch (ApiException $e) { self::assertNull($e->getProviderStatusCode()); }
         try { throw new NetworkException('network'); }
@@ -203,6 +259,36 @@ final class RuntimeSecuritySystemTest extends TestCase
         try { $service->createOrder(new CreateOrderCommand(100, CurrencyEnum::EGP)); self::fail('Second 401 must propagate.'); }
         catch (UnauthorizedException $e) { self::assertSame(401, $e->getProviderStatusCode()); }
         self::assertCount(3, $api->postCalls);
+    }
+
+    public function testSecond401ForPaymentKeyKioskAndTransactionDoesNotRepeatAgain(): void
+    {
+        $config = new PaymobConfig('key', 'hmac', 1, 2, 3);
+        $billing = new BillingData('First', 'Last', 'a@example.com', '01000000000');
+
+        $keyApi = new QueueApiClient();
+        $keyApi->postQueue = [new UnauthorizedException('first', 401), ['token' => 'new', 'profile' => ['id' => 1]], new UnauthorizedException('second', 401)];
+        try { (new PaymentKeyService($keyApi, new AuthService($keyApi, $config, $this->repoWithCachedToken($config), new FixedTestClock(1000))))
+            ->generate(new GeneratePaymentKeyCommand(10, 1, 100, CurrencyEnum::EGP, $billing)); self::fail('Second Payment Key 401 must propagate.'); }
+        catch (UnauthorizedException) {}
+        self::assertCount(3, $keyApi->postCalls);
+
+        $kioskApi = new QueueApiClient();
+        $kioskApi->postQueue = [new UnauthorizedException('first', 401), ['token' => 'new', 'profile' => ['id' => 1]], new UnauthorizedException('second', 401)];
+        try { (new KioskPaymentService($kioskApi, new AuthService($kioskApi, $config, $this->repoWithCachedToken($config), new FixedTestClock(1000))))
+            ->pay(new InitiateKioskPaymentCommand('payment-key')); self::fail('Second Kiosk 401 must propagate.'); }
+        catch (UnauthorizedException) {}
+        self::assertCount(3, $kioskApi->postCalls);
+
+        $transactionApi = new QueueApiClient();
+        $transactionApi->postQueue = [['token' => 'new', 'profile' => ['id' => 1]]];
+        $transactionApi->getQueue = [new UnauthorizedException('first', 401), new UnauthorizedException('second', 401)];
+        try { (new \Maatify\Paymob\Transaction\Service\TransactionService($transactionApi,
+            new AuthService($transactionApi, $config, $this->repoWithCachedToken($config), new FixedTestClock(1000))))
+            ->getTransaction(10); self::fail('Second Transaction 401 must propagate.'); }
+        catch (UnauthorizedException) {}
+        self::assertCount(2, $transactionApi->getCalls);
+        self::assertCount(1, $transactionApi->postCalls);
     }
 
     private function repoWithCachedToken(PaymobConfig $config): InMemoryTokenRepository

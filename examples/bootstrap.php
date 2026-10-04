@@ -1,14 +1,4 @@
 <?php
-/**
- * Created by Maatify.dev
- * User: Maatify.dev
- * Date: 2025-09-05
- * Time: 16:54
- * Project: bitaqaty-reseller-php
- * IDE: PhpStorm
- * https://www.Maatify.dev
- */
-
 declare(strict_types=1);
 
 // autoload
@@ -54,7 +44,7 @@ return (function (): PaymobExampleBootstrap {
     // Logger setup
     $logger = new Logger('paymob.bootstrap');
     $logger->pushHandler(new StreamHandler(
-        __DIR__ . '/../logs/paymob.bootstrap.log', // 👈 أضفنا .log
+        __DIR__ . '/../logs/paymob.bootstrap.log', // Write the example log file.
         LogLevel::DEBUG
     ));
 

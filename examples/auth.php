@@ -33,20 +33,20 @@ use Maatify\SharedCommon\Infrastructure\SystemClock;
 /** @var PaymobExampleBootstrap $bootstrap */
 $bootstrap = require __DIR__ . '/bootstrap.php';
 
-// جهّز الـ services
+// Prepare the services.
 $config = $bootstrap->config;
 $client = $bootstrap->client;
 $logger = $bootstrap->logger;
 
-// Repository بسيط (ممكن تستبدله بـ MySQL أو Redis)
+// Use in-memory storage; consumers may inject another repository.
 $repo = new InMemoryTokenRepository();
 
 // AuthService
 $authService = new AuthService($client, $config, $repo, new SystemClock(new \DateTimeZone('UTC')));
 
-// ───── التنفيذ ─────
+// Execute the example.
 try {
-    // أول call → API request فعلي
+    // The first call requests a token.
     /** @var TokenResponseDTO $tokenDto */
     $tokenDto = $authService->getToken();
 
@@ -57,7 +57,7 @@ try {
     echo "Expires At: " . date('Y-m-d H:i:s', $tokenDto->expiresAt) . "\n";
 
 
-    // تاني call في نفس runtime → يقرأ من الذاكرة
+    // The second call reuses the in-memory token.
     $token2 = $authService->getToken();
     echo "2nd Token generated successfully" . PHP_EOL;
     echo "Token: {$token2->token}\n";

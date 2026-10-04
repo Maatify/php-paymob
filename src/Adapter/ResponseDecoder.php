@@ -6,10 +6,7 @@ namespace Maatify\Paymob\Adapter;
 
 use JsonException;
 use Maatify\Paymob\Exception\ApiException;
-use Maatify\Paymob\Exception\NotFoundException;
-use Maatify\Paymob\Exception\RateLimitException;
-use Maatify\Paymob\Exception\ServiceUnavailableException;
-use Maatify\Paymob\Exception\UnauthorizedException;
+use Maatify\Paymob\Factory\PaymobExceptionFactory;
 
 /** @internal Shared built-in transport response classification. */
 final class ResponseDecoder
@@ -31,7 +28,8 @@ final class ResponseDecoder
 
     private static function throwProviderFailure(int $status, array|string $body): never
     {
-        $message = is_array($body) ? (string) ($body['detail'] ?? $body['message'] ?? 'Paymob provider request failed.') : 'Paymob provider request failed.';
+        if (is_array($body)) throw PaymobExceptionFactory::fromResponse($body, $status);
+        $message = 'Paymob provider request failed.';
         throw match (true) {
             $status === 401 => new UnauthorizedException($message, $status, $body),
             $status === 404 => new NotFoundException($message, $status, $body),

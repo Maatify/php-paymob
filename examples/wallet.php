@@ -105,7 +105,7 @@ try {
     echo "Currency       : {$walletResponse->currency->value}\n";
     echo "Success        : " . ($walletResponse->success ? 'true' : 'false') . "\n";
     echo "Pending        : " . ($walletResponse->pending ? 'true' : 'false') . "\n";
-    echo "Redirect URL   : {$walletResponse->redirectUrl}\n"; // لو المحفظة محتاجة Redirect/SMS
+    echo "Redirect URL   : {$walletResponse->redirectUrl}\n"; // The provider may return a redirect URL.
     echo "Message        : {$walletResponse->statusMessage}\n";
 } catch (AuthException|OrderException|TransactionException|NetworkException|ApiException $e) {
     echo "❌ SDK error: " . $e->getMessage() . PHP_EOL;

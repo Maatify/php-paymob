@@ -15,7 +15,7 @@ class ApiException extends PaymobException
     public function __construct(string $message, private readonly ?int $providerStatusCode = null,
         array|string|null $response = null, ?Throwable $previous = null)
     {
-        parent::__construct($message, $providerStatusCode ?? 0, $response, $previous, $providerStatusCode);
+        parent::__construct($message, 0, $response, $previous, $providerStatusCode);
     }
 
     public function getProviderStatusCode(): ?int { return $this->providerStatusCode; }
