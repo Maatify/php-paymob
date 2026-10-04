@@ -79,8 +79,10 @@ src/
  │    │    ├── KioskPaymentResponseDTO.php
  │    │    ├── WalletPaymentRequestDTO.php
  │    │    └── WalletPaymentResponseDTO.php
- │    └── Transaction/
- │         └── TransactionResponseDTO.php
+ │    ├── Transaction/
+ │    │    └── TransactionResponseDTO.php
+ │    └── Webhook/
+ │         └── ReturnUrlResponseDTO.php
  ├── Enum/
  │    └── CurrencyEnum.php
  ├── Exception/
@@ -108,7 +110,8 @@ src/
  │    ├── PaymentKeyService.php
  │    ├── KioskPaymentService.php
  │    ├── WalletPaymentService.php
- │    └── TransactionService.php
+ │    ├── TransactionService.php
+ │    └── ReturnUrlHandler.php
  ├── Webhook/
  │    ├── WebhookValidator.php
  ├── PaymobConfigDTO.php
@@ -123,6 +126,7 @@ examples/
  ├── wallet.php
  ├── facade_wallet.php
  ├── transaction.php
+ ├── return_url.php
  └── webhook.php
 ```
 
