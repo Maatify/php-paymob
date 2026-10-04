@@ -3,7 +3,7 @@
 ## Standard Metadata
 
 - **Standard ID:** `std-ci-workflow`
-- **Standard Version:** `3.0.0`
+- **Standard Version:** `4.0.0`
 - **Standard Version Format:** `MAJOR.MINOR.PATCH`
 
 This document outlines the standard CI workflow architecture for reusable Composer artifacts in the Maatify ecosystem. It applies to standalone Composer packages and to an extractable Base Module Artifact Root when the check or service verifies that artifact as a reusable Package. It ensures a consistent, high-quality testing and static analysis baseline without coupling repository-specific values to this Standard.
@@ -200,7 +200,7 @@ The declared Composer PHP constraint is a public compatibility contract.
 Rules:
 * Static analysis and syntax compatibility SHOULD run on the minimum supported PHP version.
 * Unit and Regression suites MUST represent the minimum and latest supported versions.
-* Packages owning database/service behavior MUST run Integration coverage on the minimum and latest supported PHP versions unless the package supports only one PHP minor.
+* Packages owning database/service behavior MUST run applicable deterministic Integration coverage on the minimum and latest supported PHP versions unless the package supports only one PHP minor.
 * Matrix `fail-fast` SHOULD be disabled so all compatibility failures are visible.
 
 ## 8. Mandatory Baseline Quality Checks
@@ -264,7 +264,13 @@ Once a repository contains GitHub Actions workflows, CI MUST validate workflow s
 
 ## 11. Integration-Test Rules
 
-Packages that own persistence or external-service behavior MUST use the real supported service in Integration CI.
+When applicable Package/Base Artifact behavior requires a repository-controlled / provisionable integration service, Integration CI MUST use the real supported service. The distinction follows the control boundary, not merely Local/Remote: the Repository/CI can deterministically provision, configure/version, health-check, reset, isolate, clean up, and destroy such a service.
+
+An externally controlled provider is outside that deterministic lifecycle and may depend on provider availability, account state, credentials, quota/cost, remote side effects, provider-controlled state, or contract drift. A provider sandbox remains external when those controls remain provider-owned. Baseline CI MUST NOT depend on live provider availability, MUST NOT require provider production credentials, MUST NOT depend on remote account/quota/cost state, and MUST NOT create uncontrolled external side effects.
+
+Applicable deterministic provider-contract verification MUST remain required and automated. Controlled live-provider verification, when applicable, is a separate gate governed by `std-external-provider-verification` (`standards/integrations/EXTERNAL_PROVIDER_VERIFICATION_STANDARD.md`); it MUST NOT become a silent skip inside baseline CI or replace required deterministic evidence. Consumer Verification Harness enforcement follows the Testing Standard's deterministic/live boundary. This reconciliation preserves reusable Package/Base Artifact applicability and does not create Host CI mechanics.
+
+The provisioning and lifecycle rules below apply to repository-controlled / provisionable Integration infrastructure; they do not require containerizing or resetting an externally controlled provider.
 
 For an Integration suite that needs a Database or other containerizable infrastructure, Docker Compose MUST be the canonical repository-owned local provisioning mechanism. Compose provisions the real service; it MUST NOT require the PHP test runner itself to run inside Docker. The PHP runner remains on the repository or CI PHP runtime by default so PHP compatibility matrices remain truthful; containerizing the runner requires an independently documented reason. Docker/Compose provisioning and Integration orchestration are verification-time dependencies only; they MUST NOT become consumer runtime dependencies of the Package or Base Module.
 
@@ -401,7 +407,7 @@ Scheduled dependency-drift verification MAY be added for reusable libraries.
 
 This standard distinguishes between universal rules and repository-specific values.
 
-* **Universal rules**: PHPStan max, real Integration services, minimum/latest PHP coverage, stable required gates, Composer validation, no hidden failures, least privilege.
+* **Universal rules**: PHPStan max, real repository-controlled/provisionable Integration services, deterministic provider-contract verification where applicable, minimum/latest PHP coverage, stable required gates, Composer validation, no hidden failures, least privilege.
 * **Repository-specific values**: exact PHP versions, exact service versions, actual test-runner configuration files, actual suite names, schema paths, environment variable names, service ports, package-owned trigger/table names, the canonical Compose definition and orchestration, local Compose project/endpoint behavior, whether `composer.lock` is tracked, and any CI-native equivalence evidence.
 
 Repository-specific values MUST be documented by each applicable artifact, but MUST NOT be hardcoded into the universal standard. The repository documentation MUST make the canonical Integration entry and the Local/CI/Harness infrastructure contract discoverable without requiring a separate manual service-start procedure.
@@ -423,7 +429,9 @@ Any applicable reusable Composer artifact in the Maatify ecosystem MUST verify t
 * [ ] explicit whitespace verification passes
 * [ ] Unit suite passes where applicable
 * [ ] Regression suite passes where applicable
-* [ ] Integration suite uses real services where applicable
+* [ ] Integration suite uses real supported repository-controlled/provisionable services where applicable
+* [ ] baseline CI is independent of live provider availability, provider production credentials, and remote account/quota/cost state, and creates no uncontrolled external side effects
+* [ ] applicable deterministic provider-contract verification remains required; controlled live-provider verification is a separately governed gate, not a silent baseline skip
 * [ ] `composer test:integration` is the focused canonical Integration entry where an Integration suite exists
 * [ ] Database/containerizable Integration infrastructure uses one repository-owned Docker Compose definition and deterministic lifecycle
 * [ ] the PHP test runner is not forced into Docker by the Integration infrastructure
@@ -455,3 +463,10 @@ Any applicable reusable Composer artifact in the Maatify ecosystem MUST verify t
 * [ ] every applicable required gate has a documented local invocation with the same verification contract as its CI invocation
 * [ ] a required Consumer Verification Harness runs as a fail-closed gate, preserves clean-state repeatability, and is included in the stable aggregate gate when relevant
 * [ ] meaningful integration boundaries run the full applicable verification set, while reduced runs still include every check tied directly to a changed contract
+
+## 20. Version History
+
+### `4.0.0`
+
+- `NORMATIVE / BREAKING_CONTRACT_CHANGE`: replace the combined persistence/external-service real-service CI obligation with a control-boundary contract; retain real supported provisionable services and required deterministic evidence while prohibiting baseline dependence on externally controlled providers.
+- Keep controlled live-provider verification under `std-external-provider-verification`, preserve Consumer Verification Harness enforcement and reusable Package/Base Artifact applicability, and retain all other applicable CI gates.
