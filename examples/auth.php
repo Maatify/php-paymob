@@ -26,6 +26,7 @@ use Maatify\Paymob\Exception\PaymobException;
 use Maatify\Paymob\Adapter\ApiClient;
 use Maatify\Paymob\Authentication\Repository\InMemoryTokenRepository;
 use Maatify\Paymob\Authentication\Service\AuthService;
+use Maatify\SharedCommon\Infrastructure\SystemClock;
 
 // ───── bootstrap ─────
 
@@ -41,7 +42,7 @@ $logger = $bootstrap->logger;
 $repo = new InMemoryTokenRepository();
 
 // AuthService
-$authService = new AuthService($client, $config, $repo);
+$authService = new AuthService($client, $config, $repo, new SystemClock());
 
 // ───── التنفيذ ─────
 try {

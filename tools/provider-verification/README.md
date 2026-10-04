@@ -17,7 +17,6 @@ Requirements:
 - The selected payment flow's integration ID: `PAYMOB_INTEGRATION_ID_CARD`, `PAYMOB_INTEGRATION_ID_KIOSK`, or `PAYMOB_INTEGRATION_ID_WALLET`.
 - Wallet flow only: `PAYMOB_TEST_WALLET_MSISDN=01010101010`, the approved public test input.
 - Transaction Inquiry only: `PAYMOB_TEST_TRANSACTION_ID`, a positive existing Transaction ID supplied locally. No integration ID or Wallet MSISDN is needed.
-- Optional: `PAYMOB_KEYS_EXPIRY`, consumed by the current package's local token-expiry calculation.
 
 Run one flow at a time from the repository root:
 

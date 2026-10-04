@@ -13,7 +13,7 @@ declare(strict_types=1);
 
 namespace Maatify\Paymob\Authentication\DTO;
 
-readonly class TokenResponseDTO
+final readonly class TokenResponseDTO implements \JsonSerializable
 {
     public function __construct(
         public string $token,

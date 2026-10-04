@@ -22,7 +22,6 @@ final readonly class VerificationConfig
         public ?int $walletIntegrationId,
         public ?string $walletTestMsisdn,
         public ?int $testTransactionId,
-        public ?string $keysExpiry,
         public string $scenario,
         public ?string $paymentMethod,
     ) {}
@@ -72,28 +71,9 @@ final readonly class VerificationConfig
         $walletTestMsisdn = null;
         $testTransactionId = null;
 
-        $requiredIntegration = match (true) {
-            $scenario === 'payment-key' && $paymentMethod === 'card' => 'card',
-            $scenario === 'payment-key' && $paymentMethod === 'kiosk' => 'kiosk',
-            $scenario === 'payment-key' && $paymentMethod === 'wallet' => 'wallet',
-            $scenario === 'kiosk' => 'kiosk',
-            $scenario === 'wallet' => 'wallet',
-            default => null,
-        };
-
-        if ($requiredIntegration !== null) {
-            $key = match ($requiredIntegration) {
-                'card' => 'PAYMOB_INTEGRATION_ID_CARD',
-                'kiosk' => 'PAYMOB_INTEGRATION_ID_KIOSK',
-                'wallet' => 'PAYMOB_INTEGRATION_ID_WALLET',
-            };
-            $id = self::positiveInteger($values, $key);
-            match ($requiredIntegration) {
-                'card' => $cardIntegrationId = $id,
-                'kiosk' => $kioskIntegrationId = $id,
-                'wallet' => $walletIntegrationId = $id,
-            };
-        }
+        $cardIntegrationId = self::positiveInteger($values, 'PAYMOB_INTEGRATION_ID_CARD');
+        $kioskIntegrationId = self::positiveInteger($values, 'PAYMOB_INTEGRATION_ID_KIOSK');
+        $walletIntegrationId = self::positiveInteger($values, 'PAYMOB_INTEGRATION_ID_WALLET');
 
         if ($scenario === 'wallet') {
             $walletTestMsisdn = self::required($values, 'PAYMOB_TEST_WALLET_MSISDN');
@@ -110,16 +90,6 @@ final readonly class VerificationConfig
             $testTransactionId = (int)$value;
         }
 
-        $keysExpiry = isset($values['PAYMOB_KEYS_EXPIRY']) && trim((string)$values['PAYMOB_KEYS_EXPIRY']) !== ''
-            ? trim((string)$values['PAYMOB_KEYS_EXPIRY'])
-            : null;
-
-        if ($keysExpiry !== null) {
-            $_ENV['PAYMOB_KEYS_EXPIRY'] = $keysExpiry;
-        } else {
-            unset($_ENV['PAYMOB_KEYS_EXPIRY']);
-        }
-
         return new self(
             $root,
             $apiKey,
@@ -130,7 +100,6 @@ final readonly class VerificationConfig
             $walletIntegrationId,
             $walletTestMsisdn,
             $testTransactionId,
-            $keysExpiry,
             $scenario,
             $paymentMethod,
         );
@@ -142,11 +111,11 @@ final readonly class VerificationConfig
         // PaymobConfig requires all IDs; zero fills only fields unused by this scenario.
         return new PaymobConfig(
             $this->apiKey,
+            $this->hmacSecret,
             $this->cardIntegrationId ?? 0,
             $this->kioskIntegrationId ?? 0,
             $this->walletIntegrationId ?? 0,
             $this->baseUrl,
-            $this->hmacSecret,
         );
     }
 

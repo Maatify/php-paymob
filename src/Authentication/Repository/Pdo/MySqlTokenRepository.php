@@ -1,47 +1,49 @@
 <?php
-/**
- * Created by Maatify.dev
- * User: Maatify.dev
- * Date: 2025-09-16
- * Time: 16:48
- * Project: paymob-php
- * IDE: PhpStorm
- * https://www.Maatify.dev
- */
 
 declare(strict_types=1);
 
 namespace Maatify\Paymob\Authentication\Repository\Pdo;
 
 use Maatify\Paymob\Authentication\DTO\TokenResponseDTO;
+use Maatify\Paymob\Authentication\Repository\TokenRepositoryInterface;
+use Maatify\Paymob\Authentication\ValueObject\TokenScope;
+use Maatify\Paymob\Exception\OptionalCapabilityUnavailableException;
 use PDO;
 
-final class MySqlTokenRepository implements TokenRepositoryInterface
+final readonly class MySqlTokenRepository implements TokenRepositoryInterface
 {
-    public function __construct(private PDO $pdo) {}
+    private PDO $pdo;
 
-    public function get(): ?TokenResponseDTO
+    public function __construct(mixed $pdo)
     {
-        $stmt = $this->pdo->query("SELECT token, profile_id, issued_at, expires_at FROM paymob_tokens ORDER BY id DESC LIMIT 1");
-        $row = $stmt->fetch(PDO::FETCH_ASSOC);
-        if (!$row) return null;
-
-        return new TokenResponseDTO(
-            token: $row['token'],
-            profileId: (int)$row['profile_id'],
-            issuedAt: (int)$row['issued_at'],
-            expiresAt: (int)$row['expires_at']
-        );
+        if (!extension_loaded('pdo') || !extension_loaded('pdo_mysql') || !class_exists(PDO::class)) {
+            throw new OptionalCapabilityUnavailableException('MySqlTokenRepository requires ext-pdo and ext-pdo_mysql.');
+        }
+        if (!$pdo instanceof PDO || $pdo->getAttribute(PDO::ATTR_DRIVER_NAME) !== 'mysql') {
+            throw new OptionalCapabilityUnavailableException('MySqlTokenRepository requires a Host-provided PDO using the mysql driver.');
+        }
+        $this->pdo = $pdo;
     }
 
-    public function save(TokenResponseDTO $dto): void
+    public function get(TokenScope $scope): ?TokenResponseDTO
     {
-        $stmt = $this->pdo->prepare("INSERT INTO paymob_tokens (token, profile_id, issued_at, expires_at) VALUES (?, ?, ?, ?)");
-        $stmt->execute([$dto->token, $dto->profileId, $dto->issuedAt, $dto->expiresAt]);
+        $statement = $this->pdo->prepare('SELECT token, profile_id, issued_at, expires_at FROM maa_paymob_auth_tokens WHERE scope_key = :scope_key LIMIT 1');
+        $statement->execute(['scope_key' => $scope->value()]);
+        $row = $statement->fetch(PDO::FETCH_ASSOC);
+        if ($row === false) return null;
+        return new TokenResponseDTO((string) $row['token'], (int) $row['profile_id'], (int) $row['issued_at'], (int) $row['expires_at']);
     }
 
-    public function clear(): void
+    public function save(TokenScope $scope, TokenResponseDTO $token): void
     {
-        $this->pdo->exec("DELETE FROM paymob_tokens");
+        $statement = $this->pdo->prepare('INSERT INTO maa_paymob_auth_tokens (scope_key, token, profile_id, issued_at, expires_at) VALUES (:scope_key, :token, :profile_id, :issued_at, :expires_at) ON DUPLICATE KEY UPDATE token = VALUES(token), profile_id = VALUES(profile_id), issued_at = VALUES(issued_at), expires_at = VALUES(expires_at)');
+        $statement->execute(['scope_key' => $scope->value(), 'token' => $token->token, 'profile_id' => $token->profileId,
+            'issued_at' => $token->issuedAt, 'expires_at' => $token->expiresAt]);
+    }
+
+    public function clear(TokenScope $scope): void
+    {
+        $statement = $this->pdo->prepare('DELETE FROM maa_paymob_auth_tokens WHERE scope_key = :scope_key');
+        $statement->execute(['scope_key' => $scope->value()]);
     }
 }

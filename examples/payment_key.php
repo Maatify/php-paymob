@@ -22,6 +22,7 @@ use Maatify\Paymob\Payment\Command\GeneratePaymentKeyCommand;
 use Maatify\Paymob\Payment\DTO\PaymentKeyResponseDTO;
 use Maatify\Paymob\Enum\CurrencyEnum;
 use Maatify\Paymob\Authentication\Service\AuthService;
+use Maatify\SharedCommon\Infrastructure\SystemClock;
 use Maatify\Paymob\Order\Service\OrderService;
 use Maatify\Paymob\Payment\Service\PaymentKeyService;
 use Maatify\Paymob\Authentication\Repository\InMemoryTokenRepository;
@@ -29,7 +30,7 @@ use Maatify\Paymob\Exception\{AuthException, ApiException, NetworkException, Ord
 
 // Auth + Services
 $repo = new InMemoryTokenRepository();
-$authService = new AuthService($bootstrap->client, $bootstrap->config, $repo);
+$authService = new AuthService($bootstrap->client, $bootstrap->config, $repo, new SystemClock());
 $orderService = new OrderService($bootstrap->client, $bootstrap->config, $authService);
 $paymentKeyService = new PaymentKeyService($bootstrap->client, $authService);
 

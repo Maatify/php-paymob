@@ -34,6 +34,7 @@ $facade = new PaymobFacade(
     config : $bootstrap->config,
     http   : $bootstrap->client,
     repo   : new InMemoryTokenRepository(),
+    clock  : $bootstrap->clock,
     logger : $bootstrap->logger
 );
 

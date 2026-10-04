@@ -29,6 +29,7 @@ use Maatify\Paymob\Exception\{ApiException, AuthException, NetworkException, Ord
 use Maatify\Paymob\Payment\DTO\WalletFlowResultDTO;
 use Maatify\Paymob\Adapter\ApiClientInterface;
 use Maatify\Paymob\Authentication\Repository\TokenRepositoryInterface;
+use Maatify\SharedCommon\Contracts\ClockInterface;
 use Maatify\Paymob\Authentication\Service\AuthService;
 use Maatify\Paymob\Order\Service\OrderService;
 use Maatify\Paymob\Payment\Service\KioskPaymentService;
@@ -49,10 +50,11 @@ final class PaymobFacade
         private readonly PaymobConfig $config,
         private readonly ApiClientInterface $http,
         private readonly TokenRepositoryInterface $repo,
+        private readonly ClockInterface $clock,
         private readonly ?LoggerInterface $logger = null,
         private readonly string $channel = 'paymob.facade.kiosk'
     ) {
-        $this->auth   = new AuthService($this->http, $this->config, $this->repo);
+        $this->auth   = new AuthService($this->http, $this->config, $this->repo, $this->clock);
         $this->orders = new OrderService($this->http, $this->config, $this->auth);
         $this->keys   = new PaymentKeyService($this->http, $this->auth);
         $this->kiosk  = new KioskPaymentService($this->http, $this->auth);

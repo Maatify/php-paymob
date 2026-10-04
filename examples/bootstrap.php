@@ -32,6 +32,8 @@ use Maatify\Paymob\Config\PaymobConfig;
 use Monolog\Handler\StreamHandler;
 use Monolog\Logger;
 use Psr\Log\LogLevel;
+use Maatify\SharedCommon\Contracts\ClockInterface;
+use Maatify\SharedCommon\Infrastructure\SystemClock;
 
 $dotenv = Dotenv\Dotenv::createImmutable(__DIR__ . '/../');
 $dotenv->safeLoad();
@@ -42,6 +44,7 @@ final readonly class PaymobExampleBootstrap
         public PaymobConfig $config,
         public ApiClientInterface $client,
         public Logger $logger,
+        public ClockInterface $clock,
     )
     {
     }
@@ -79,5 +82,5 @@ return (function (): PaymobExampleBootstrap {
         useGuzzle: false
     );
 
-    return new PaymobExampleBootstrap($config, $client, $logger);
+    return new PaymobExampleBootstrap($config, $client, $logger, new SystemClock());
 })();

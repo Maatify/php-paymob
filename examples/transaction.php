@@ -20,13 +20,14 @@ use Maatify\Paymob\Exception\OrderException;
 use Maatify\Paymob\Exception\TransactionException;
 use Maatify\Paymob\Authentication\Repository\InMemoryTokenRepository;
 use Maatify\Paymob\Authentication\Service\AuthService;
+use Maatify\SharedCommon\Infrastructure\SystemClock;
 use Maatify\Paymob\Transaction\Service\TransactionService;
 
 $bootstrap = require __DIR__ . '/bootstrap.php';
 
 // Auth + Services
 $repo = new InMemoryTokenRepository();
-$authService = new AuthService($bootstrap->client, $bootstrap->config, $repo);
+$authService = new AuthService($bootstrap->client, $bootstrap->config, $repo, new SystemClock());
 
 $transactionService = new TransactionService($bootstrap->client, $authService);
 

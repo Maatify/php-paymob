@@ -14,6 +14,7 @@ use Maatify\Paymob\Payment\Command\InitiateWalletPaymentCommand;
 use Maatify\Paymob\Enum\CurrencyEnum;
 use Maatify\Paymob\Authentication\Repository\InMemoryTokenRepository;
 use Maatify\Paymob\Authentication\Service\AuthService;
+use Maatify\SharedCommon\Infrastructure\SystemClock;
 use Maatify\Paymob\Payment\Service\KioskPaymentService;
 use Maatify\Paymob\Order\Service\OrderService;
 use Maatify\Paymob\Payment\Service\PaymentKeyService;
@@ -172,7 +173,7 @@ final class VerificationContext
     private function execute(): array
     {
         $configDTO = $this->config->packageConfig();
-        $authService = new AuthService($this->apiClient, $configDTO, $this->tokenRepository);
+        $authService = new AuthService($this->apiClient, $configDTO, $this->tokenRepository, new SystemClock());
         $results = [];
 
         $this->setStage('auth');
@@ -186,7 +187,7 @@ final class VerificationContext
             'profile_id_type' => get_debug_type($authResponse->profileId),
             'issued_at_type' => get_debug_type($authResponse->issuedAt),
             'expires_at_type' => get_debug_type($authResponse->expiresAt),
-            'expiry_source' => 'local package behavior: PAYMOB_KEYS_EXPIRY minutes; not provider evidence',
+            'token_ttl_seconds' => 3600,
         ];
 
         if ($this->config->scenario === 'auth') {

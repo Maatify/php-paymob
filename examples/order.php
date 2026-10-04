@@ -13,6 +13,7 @@ declare(strict_types=1);
 
 use Maatify\Paymob\Authentication\Repository\InMemoryTokenRepository;
 use Maatify\Paymob\Authentication\Service\AuthService;
+use Maatify\SharedCommon\Infrastructure\SystemClock;
 use Maatify\Paymob\Order\Service\OrderService;
 use Maatify\Paymob\Order\Command\CreateOrderCommand;
 use Maatify\Paymob\Order\ValueObject\OrderItem;
@@ -28,7 +29,8 @@ try {
     $authService = new AuthService(
         http: $bootstrap->client,
         config: $bootstrap->config,
-        repo: new InMemoryTokenRepository() // ممكن تغيرها بـ DB repo
+        repo: new InMemoryTokenRepository(), // in-memory cache for this example
+        clock: $bootstrap->clock,
     );
 
     // Order service

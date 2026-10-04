@@ -16,6 +16,7 @@ use Maatify\Paymob\Exception\ApiException;
 use Maatify\Paymob\Adapter\ApiClientInterface;
 use Maatify\Paymob\Authentication\Repository\InMemoryTokenRepository;
 use Maatify\Paymob\Authentication\Service\AuthService;
+use Maatify\SharedCommon\Infrastructure\SystemClock;
 use Maatify\Paymob\Transaction\Service\TransactionService;
 use Maatify\Paymob\Enum\CurrencyEnum;
 use Maatify\Paymob\ProviderVerification\Support\CaptureSession;
@@ -833,7 +834,7 @@ JSON;
     ));
     $transactionService = new TransactionService(
         $transactionHttp,
-        new AuthService($transactionHttp, $transactionConfig->packageConfig(), $transactionTokenRepository),
+        new AuthService($transactionHttp, $transactionConfig->packageConfig(), $transactionTokenRepository, new SystemClock()),
     );
     $transactionDto = $transactionService->getTransaction(42);
     verify(
