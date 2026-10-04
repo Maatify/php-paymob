@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace Maatify\Paymob\Tests\System\ReturnUrl;
 
-use Maatify\Paymob\DTO\PaymobConfigDTO;
-use Maatify\Paymob\DTO\Webhook\ReturnUrlResponseDTO;
-use Maatify\Paymob\Service\ReturnUrlHandler;
+use Maatify\Paymob\Config\PaymobConfig;
+use Maatify\Paymob\Callback\DTO\ReturnUrlResponseDTO;
+use Maatify\Paymob\Callback\Service\ReturnUrlHandler;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
@@ -332,7 +332,7 @@ final class ReturnUrlHandlerSystemTest extends TestCase
 
     private function handler(string $hmacSecret = self::HMAC_SECRET): ReturnUrlHandler
     {
-        return new ReturnUrlHandler(new PaymobConfigDTO(
+        return new ReturnUrlHandler(new PaymobConfig(
             apiKey: 'synthetic-api-key',
             integrationIdCard: 1,
             integrationIdKiosk: 2,

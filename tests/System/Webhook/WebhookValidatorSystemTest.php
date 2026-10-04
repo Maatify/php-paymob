@@ -4,10 +4,10 @@ declare(strict_types=1);
 
 namespace Maatify\Paymob\Tests\System\Webhook;
 
-use Maatify\Paymob\DTO\PaymobConfigDTO;
-use Maatify\Paymob\DTO\Webhook\WebhookPayloadDTO;
+use Maatify\Paymob\Config\PaymobConfig;
+use Maatify\Paymob\Callback\DTO\WebhookPayloadDTO;
 use Maatify\Paymob\Exception\WebhookException;
-use Maatify\Paymob\Webhook\WebhookValidator;
+use Maatify\Paymob\Callback\Service\WebhookValidator;
 use PHPUnit\Framework\TestCase;
 
 final class WebhookValidatorSystemTest extends TestCase
@@ -128,7 +128,7 @@ final class WebhookValidatorSystemTest extends TestCase
 
     private function validator(): WebhookValidator
     {
-        return new WebhookValidator(new PaymobConfigDTO(
+        return new WebhookValidator(new PaymobConfig(
             apiKey: 'synthetic-api-key',
             integrationIdCard: 1,
             integrationIdKiosk: 2,

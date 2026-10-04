@@ -6,7 +6,7 @@ namespace Maatify\Paymob\ProviderVerification\Support;
 
 use Dotenv\Dotenv;
 use InvalidArgumentException;
-use Maatify\Paymob\DTO\PaymobConfigDTO;
+use Maatify\Paymob\Config\PaymobConfig;
 use RuntimeException;
 
 /** Holds scenario-scoped local inputs for manual Paymob verification. */
@@ -137,10 +137,10 @@ final readonly class VerificationConfig
     }
 
     /** Build the package configuration while leaving unused integration IDs unselected. */
-    public function packageConfig(): PaymobConfigDTO
+    public function packageConfig(): PaymobConfig
     {
-        // PaymobConfigDTO requires all IDs; zero fills only fields unused by this scenario.
-        return new PaymobConfigDTO(
+        // PaymobConfig requires all IDs; zero fills only fields unused by this scenario.
+        return new PaymobConfig(
             $this->apiKey,
             $this->cardIntegrationId ?? 0,
             $this->kioskIntegrationId ?? 0,

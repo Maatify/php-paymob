@@ -7,7 +7,7 @@ namespace Maatify\Paymob\ProviderVerification\Support;
 use JsonException;
 use Maatify\Paymob\Exception\ApiException;
 use Maatify\Paymob\Exception\NetworkException;
-use Maatify\Paymob\Http\ApiClientInterface;
+use Maatify\Paymob\Adapter\ApiClientInterface;
 use RuntimeException;
 use stdClass;
 use Throwable;

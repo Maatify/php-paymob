@@ -18,9 +18,9 @@ use Maatify\Paymob\Exception\AuthException;
 use Maatify\Paymob\Exception\NetworkException;
 use Maatify\Paymob\Exception\OrderException;
 use Maatify\Paymob\Exception\TransactionException;
-use Maatify\Paymob\Repository\InMemoryTokenRepository;
-use Maatify\Paymob\Service\AuthService;
-use Maatify\Paymob\Service\TransactionService;
+use Maatify\Paymob\Authentication\Repository\InMemoryTokenRepository;
+use Maatify\Paymob\Authentication\Service\AuthService;
+use Maatify\Paymob\Transaction\Service\TransactionService;
 
 $bootstrap = require __DIR__ . '/bootstrap.php';
 

@@ -4,19 +4,19 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/bootstrap.php';
 
-use Maatify\Paymob\DTO\Payment\KioskPaymentRequestDTO;
-use Maatify\Paymob\DTO\Payment\KioskPaymentResponseDTO;
-use Maatify\Paymob\DTO\Order\OrderItemDTO;
-use Maatify\Paymob\DTO\Order\OrderItemsDTO;
-use Maatify\Paymob\DTO\Order\OrderRequestDTO;
-use Maatify\Paymob\DTO\Payment\BillingDataDTO;
-use Maatify\Paymob\DTO\Payment\PaymentKeyRequestDTO;
-use Maatify\Paymob\DTO\Auth\TokenResponseDTO;
+use Maatify\Paymob\Payment\Command\InitiateKioskPaymentCommand;
+use Maatify\Paymob\Payment\DTO\KioskPaymentResponseDTO;
+use Maatify\Paymob\Order\ValueObject\OrderItem;
+use Maatify\Paymob\Order\DTO\OrderItemCollectionDTO;
+use Maatify\Paymob\Order\Command\CreateOrderCommand;
+use Maatify\Paymob\Payment\ValueObject\BillingData;
+use Maatify\Paymob\Payment\Command\GeneratePaymentKeyCommand;
+use Maatify\Paymob\Authentication\DTO\TokenResponseDTO;
 use Maatify\Paymob\Exception\ApiException;
-use Maatify\Paymob\Http\ApiClientInterface;
-use Maatify\Paymob\Repository\InMemoryTokenRepository;
-use Maatify\Paymob\Service\AuthService;
-use Maatify\Paymob\Service\TransactionService;
+use Maatify\Paymob\Adapter\ApiClientInterface;
+use Maatify\Paymob\Authentication\Repository\InMemoryTokenRepository;
+use Maatify\Paymob\Authentication\Service\AuthService;
+use Maatify\Paymob\Transaction\Service\TransactionService;
 use Maatify\Paymob\Enum\CurrencyEnum;
 use Maatify\Paymob\ProviderVerification\Support\CaptureSession;
 use Maatify\Paymob\ProviderVerification\Support\CapturingApiClient;
@@ -105,26 +105,26 @@ $expectClassificationFailure = static function (
 };
 
 $makeSyntheticOrderRequest = static function (string $authToken, string $merchantOrderId): array {
-    return (new OrderRequestDTO(
+    return (new CreateOrderCommand(
         amountCents: 15000,
         currency: CurrencyEnum::EGP,
         merchantOrderId: $merchantOrderId,
-        items: new OrderItemsDTO(new OrderItemDTO(
+        items: [new OrderItem(
             name: 'Provider verification item',
             amountCents: 15000,
             quantity: 1,
             description: 'Synthetic provider verification order',
-        )),
+        )],
     ))->toArray($authToken);
 };
 
 $makeSyntheticPaymentKeyRequest = static function (int $integrationId, string $authToken): array {
-    return (new PaymentKeyRequestDTO(
+    return (new GeneratePaymentKeyCommand(
         orderId: 123456,
         integrationId: $integrationId,
         amountCents: 15000,
         currency: CurrencyEnum::EGP,
-        billingData: new BillingDataDTO(
+        billingData: new BillingData(
             firstName: 'Synthetic',
             lastName: 'Verification',
             email: 'synthetic@example.test',
@@ -242,7 +242,7 @@ try {
         'Live capture does not classify the actual request before cURL or persist that shared stage.',
     );
 
-    $guzzleGetMethod = new ReflectionMethod(\Maatify\Paymob\Http\GuzzleApiClient::class, 'get');
+    $guzzleGetMethod = new ReflectionMethod(\Maatify\Paymob\Adapter\GuzzleApiClient::class, 'get');
     $guzzleSourcePath = $guzzleGetMethod->getFileName();
     verify(is_string($guzzleSourcePath), 'Guzzle GET source path could not be resolved.');
     $guzzleSourceLines = file($guzzleSourcePath);
@@ -1312,7 +1312,7 @@ JSON;
     verify(
         is_array($walletSyntheticOrderRequest)
         && $walletSyntheticOrderRequest['auth_token'] === 'recovery-self-check-auth-token',
-        'Synthetic Wallet Order request was not derived from OrderRequestDTO with its Auth token.',
+        'Synthetic Wallet Order request was not derived from CreateOrderCommand with its Auth token.',
     );
     echo "PASS shared live classifier normal Wallet sequence and DTO-derived Order request\n";
 
@@ -1747,7 +1747,7 @@ JSON;
         'Kiosk recovery configuration incorrectly requires or selects Wallet inputs.',
     );
 
-    $kioskRequestDTO = new KioskPaymentRequestDTO($kioskPaymentToken);
+    $kioskRequestDTO = new InitiateKioskPaymentCommand($kioskPaymentToken);
     $kioskDTORequest = $kioskRequestDTO->toArray($kioskAuthToken);
     verify(
         $kioskDTORequest === [
@@ -2229,7 +2229,7 @@ JSON;
     $cardOtherReference = 'synthetic-card-private-other-endpoint-reference';
     $cardOrderId = 123456;
     $cardAccountId = 456789;
-    $cardBilling = new BillingDataDTO(
+    $cardBilling = new BillingData(
         firstName: 'Private Card Given',
         lastName: 'Private Card Family',
         email: 'private-card-person@example.org',
@@ -2243,7 +2243,7 @@ JSON;
         postalCode: '12345',
         state: 'Private Card State',
     );
-    $cardPaymentKeyRequestDTO = new PaymentKeyRequestDTO(
+    $cardGeneratePaymentKeyCommand = new GeneratePaymentKeyCommand(
         orderId: $cardOrderId,
         integrationId: (int)$cardIntegrationId,
         amountCents: 15000,
@@ -2251,7 +2251,7 @@ JSON;
         billingData: $cardBilling,
         expirationMinutes: 180,
     );
-    $cardPaymentKeyRequest = $cardPaymentKeyRequestDTO->toArray($cardAuthToken);
+    $cardPaymentKeyRequest = $cardGeneratePaymentKeyCommand->toArray($cardAuthToken);
     verify(
         array_diff([
             'auth_token', 'order_id', 'integration_id', 'amount_cents', 'currency', 'expiration', 'billing_data',
@@ -2471,7 +2471,7 @@ JSON;
         $cardRetryAuthExchange,
         [
             $paymentKeyUrl,
-            $cardPaymentKeyRequestDTO->toArray($cardRefreshedAuthToken),
+            $cardGeneratePaymentKeyCommand->toArray($cardRefreshedAuthToken),
             [
                 'token' => $cardRetryPaymentToken,
                 'order' => $cardOrderId,

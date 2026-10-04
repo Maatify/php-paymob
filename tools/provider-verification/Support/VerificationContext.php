@@ -4,21 +4,21 @@ declare(strict_types=1);
 
 namespace Maatify\Paymob\ProviderVerification\Support;
 
-use Maatify\Paymob\DTO\Order\OrderItemDTO;
-use Maatify\Paymob\DTO\Order\OrderItemsDTO;
-use Maatify\Paymob\DTO\Order\OrderRequestDTO;
-use Maatify\Paymob\DTO\Payment\BillingDataDTO;
-use Maatify\Paymob\DTO\Payment\KioskPaymentRequestDTO;
-use Maatify\Paymob\DTO\Payment\PaymentKeyRequestDTO;
-use Maatify\Paymob\DTO\Payment\WalletPaymentRequestDTO;
+use Maatify\Paymob\Order\ValueObject\OrderItem;
+use Maatify\Paymob\Order\DTO\OrderItemCollectionDTO;
+use Maatify\Paymob\Order\Command\CreateOrderCommand;
+use Maatify\Paymob\Payment\ValueObject\BillingData;
+use Maatify\Paymob\Payment\Command\InitiateKioskPaymentCommand;
+use Maatify\Paymob\Payment\Command\GeneratePaymentKeyCommand;
+use Maatify\Paymob\Payment\Command\InitiateWalletPaymentCommand;
 use Maatify\Paymob\Enum\CurrencyEnum;
-use Maatify\Paymob\Repository\InMemoryTokenRepository;
-use Maatify\Paymob\Service\AuthService;
-use Maatify\Paymob\Service\KioskPaymentService;
-use Maatify\Paymob\Service\OrderService;
-use Maatify\Paymob\Service\PaymentKeyService;
-use Maatify\Paymob\Service\TransactionService;
-use Maatify\Paymob\Service\WalletPaymentService;
+use Maatify\Paymob\Authentication\Repository\InMemoryTokenRepository;
+use Maatify\Paymob\Authentication\Service\AuthService;
+use Maatify\Paymob\Payment\Service\KioskPaymentService;
+use Maatify\Paymob\Order\Service\OrderService;
+use Maatify\Paymob\Payment\Service\PaymentKeyService;
+use Maatify\Paymob\Transaction\Service\TransactionService;
+use Maatify\Paymob\Payment\Service\WalletPaymentService;
 use Throwable;
 
 /** Wires one explicit manual provider flow through the package services and capture transport. */
@@ -244,7 +244,7 @@ final class VerificationContext
         $method = $this->selectedPaymentMethod();
         $integrationId = $this->integrationId($method);
         $this->setStage('payment-key-' . $method);
-        $paymentKeyResponse = $paymentKeyService->generate(new PaymentKeyRequestDTO(
+        $paymentKeyResponse = $paymentKeyService->generate(new GeneratePaymentKeyCommand(
             orderId: $orderResponse->id,
             integrationId: $integrationId,
             amountCents: 15000,
@@ -275,7 +275,7 @@ final class VerificationContext
 
         if ($this->config->scenario === 'kiosk') {
             $this->setStage('kiosk-payment');
-            $kioskResponse = $kioskService->pay(new KioskPaymentRequestDTO($paymentKeyResponse->token));
+            $kioskResponse = $kioskService->pay(new InitiateKioskPaymentCommand($paymentKeyResponse->token));
             $results['kiosk'] = [
                 'service' => KioskPaymentService::class,
                 'dto' => $kioskResponse::class,
@@ -291,7 +291,7 @@ final class VerificationContext
         }
 
         $this->setStage('wallet-initiation');
-        $walletResponse = $walletService->pay(new WalletPaymentRequestDTO(
+        $walletResponse = $walletService->pay(new InitiateWalletPaymentCommand(
             paymentToken: $paymentKeyResponse->token,
             phoneNumber: (string)$this->config->walletTestMsisdn,
         ));
@@ -311,25 +311,25 @@ final class VerificationContext
         return ['result' => 'PASS', 'scenario' => 'wallet', 'service_results' => $results];
     }
 
-    private function syntheticOrderRequest(): OrderRequestDTO
+    private function syntheticOrderRequest(): CreateOrderCommand
     {
         $merchantOrderId = 'provider-verify-' . gmdate('YmdHis') . '-' . bin2hex(random_bytes(5));
-        return new OrderRequestDTO(
+        return new CreateOrderCommand(
             amountCents: 15000,
             currency: CurrencyEnum::EGP,
             merchantOrderId: $merchantOrderId,
-            items: new OrderItemsDTO(new OrderItemDTO(
+            items: [new OrderItem(
                 name: 'Provider verification item',
                 amountCents: 15000,
                 quantity: 1,
                 description: 'Synthetic provider verification order',
-            )),
+            )],
         );
     }
 
-    private function syntheticBillingData(): BillingDataDTO
+    private function syntheticBillingData(): BillingData
     {
-        return new BillingDataDTO(
+        return new BillingData(
             firstName: 'Provider',
             lastName: 'Verification',
             email: 'provider-verification@example.test',

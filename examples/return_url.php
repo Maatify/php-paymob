@@ -14,7 +14,7 @@ declare(strict_types=1);
 /** @var PaymobExampleBootstrap $bootstrap */
 $bootstrap = require __DIR__ . '/bootstrap.php';
 
-use Maatify\Paymob\Service\ReturnUrlHandler;
+use Maatify\Paymob\Callback\Service\ReturnUrlHandler;
 
 $handler = new ReturnUrlHandler($bootstrap->config);
 

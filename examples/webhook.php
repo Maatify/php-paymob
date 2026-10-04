@@ -14,7 +14,7 @@ declare(strict_types=1);
 /** @var PaymobExampleBootstrap $bootstrap */
 $bootstrap = require __DIR__ . '/bootstrap.php';
 
-use Maatify\Paymob\Webhook\WebhookValidator;
+use Maatify\Paymob\Callback\Service\WebhookValidator;
 use Maatify\Paymob\Exception\WebhookException;
 
 $validator = new WebhookValidator($bootstrap->config);

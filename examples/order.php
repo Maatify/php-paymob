@@ -11,12 +11,12 @@
 
 declare(strict_types=1);
 
-use Maatify\Paymob\Repository\InMemoryTokenRepository;
-use Maatify\Paymob\Service\AuthService;
-use Maatify\Paymob\Service\OrderService;
-use Maatify\Paymob\DTO\Order\OrderRequestDTO;
-use Maatify\Paymob\DTO\Order\OrderItemDTO;
-use Maatify\Paymob\DTO\Order\OrderItemsDTO;
+use Maatify\Paymob\Authentication\Repository\InMemoryTokenRepository;
+use Maatify\Paymob\Authentication\Service\AuthService;
+use Maatify\Paymob\Order\Service\OrderService;
+use Maatify\Paymob\Order\Command\CreateOrderCommand;
+use Maatify\Paymob\Order\ValueObject\OrderItem;
+use Maatify\Paymob\Order\DTO\OrderItemCollectionDTO;
 use Maatify\Paymob\Enum\CurrencyEnum;
 use Maatify\Paymob\Exception\OrderException;
 
@@ -39,13 +39,12 @@ try {
     );
 
     // Items
-    $items = new OrderItemsDTO(
-        new OrderItemDTO('T-shirt', 5000, 1),
-        new OrderItemDTO('Shoes', 10000, 1, 'Running Shoes')
-    );
+    $items = [
+        new OrderItem('T-shirt', 5000, 1),
+        new OrderItem('Shoes', 10000, 1, 'Running Shoes')];
 
     // Order request
-    $request = new OrderRequestDTO(
+    $request = new CreateOrderCommand(
         amountCents: 15000,
         currency: CurrencyEnum::EGP,
         merchantOrderId: uniqid(),

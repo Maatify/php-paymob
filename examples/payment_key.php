@@ -14,17 +14,17 @@ declare(strict_types=1);
 /** @var PaymobExampleBootstrap $bootstrap */
 $bootstrap = require __DIR__ . '/bootstrap.php';
 
-use Maatify\Paymob\DTO\Order\OrderItemDTO;
-use Maatify\Paymob\DTO\Order\OrderItemsDTO;
-use Maatify\Paymob\DTO\Order\OrderRequestDTO;
-use Maatify\Paymob\DTO\Payment\BillingDataDTO;
-use Maatify\Paymob\DTO\Payment\PaymentKeyRequestDTO;
-use Maatify\Paymob\DTO\Payment\PaymentKeyResponseDTO;
+use Maatify\Paymob\Order\ValueObject\OrderItem;
+use Maatify\Paymob\Order\DTO\OrderItemCollectionDTO;
+use Maatify\Paymob\Order\Command\CreateOrderCommand;
+use Maatify\Paymob\Payment\ValueObject\BillingData;
+use Maatify\Paymob\Payment\Command\GeneratePaymentKeyCommand;
+use Maatify\Paymob\Payment\DTO\PaymentKeyResponseDTO;
 use Maatify\Paymob\Enum\CurrencyEnum;
-use Maatify\Paymob\Service\AuthService;
-use Maatify\Paymob\Service\OrderService;
-use Maatify\Paymob\Service\PaymentKeyService;
-use Maatify\Paymob\Repository\InMemoryTokenRepository;
+use Maatify\Paymob\Authentication\Service\AuthService;
+use Maatify\Paymob\Order\Service\OrderService;
+use Maatify\Paymob\Payment\Service\PaymentKeyService;
+use Maatify\Paymob\Authentication\Repository\InMemoryTokenRepository;
 use Maatify\Paymob\Exception\{AuthException, ApiException, NetworkException, OrderException, TransactionException};
 
 // Auth + Services
@@ -34,12 +34,11 @@ $orderService = new OrderService($bootstrap->client, $bootstrap->config, $authSe
 $paymentKeyService = new PaymentKeyService($bootstrap->client, $authService);
 
 // Step 1: Create order
-$items = new OrderItemsDTO(
-    new OrderItemDTO('T-shirt', 5000, 1),
-    new OrderItemDTO('Shoes', 10000, 1, 'Running Shoes')
-);
+$items = [
+    new OrderItem('T-shirt', 5000, 1),
+    new OrderItem('Shoes', 10000, 1, 'Running Shoes')];
 
-$orderRequest = new OrderRequestDTO(
+$orderRequest = new CreateOrderCommand(
     amountCents: 15000,
     currency: CurrencyEnum::EGP,
     merchantOrderId: 'ORD-' . uniqid(),
@@ -52,7 +51,7 @@ try {
     echo "✅ Order created successfully. ID = {$orderResponse->id}\n";
 
     // Step 2: Billing data
-    $billing = new BillingDataDTO(
+    $billing = new BillingData(
         firstName  : 'Mohamed',
         lastName   : 'Abdulalim',
         email      : 'mohamed@example.com',
@@ -68,7 +67,7 @@ try {
     );
 
     // Step 3: Payment key request
-    $paymentKeyRequest = new PaymentKeyRequestDTO(
+    $paymentKeyRequest = new GeneratePaymentKeyCommand(
         orderId      : $orderResponse->id, // 👈 dynamic orderId from Paymob
         integrationId: $bootstrap->config->integrationIdCard,
         amountCents  : $orderResponse->amountCents,

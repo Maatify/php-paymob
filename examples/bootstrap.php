@@ -24,11 +24,11 @@ foreach ($autoloadFiles as $file) {
     }
 }
 
-use Maatify\Paymob\Http\ApiClient;
-use Maatify\Paymob\Http\ApiClientInterface;
-use Maatify\Paymob\Http\CurlApiClient;
-use Maatify\Paymob\Http\GuzzleApiClient;
-use Maatify\Paymob\DTO\PaymobConfigDTO;
+use Maatify\Paymob\Adapter\ApiClient;
+use Maatify\Paymob\Adapter\ApiClientInterface;
+use Maatify\Paymob\Adapter\CurlApiClient;
+use Maatify\Paymob\Adapter\GuzzleApiClient;
+use Maatify\Paymob\Config\PaymobConfig;
 use Monolog\Handler\StreamHandler;
 use Monolog\Logger;
 use Psr\Log\LogLevel;
@@ -39,7 +39,7 @@ $dotenv->safeLoad();
 final readonly class PaymobExampleBootstrap
 {
     public function __construct(
-        public PaymobConfigDTO $config,
+        public PaymobConfig $config,
         public ApiClientInterface $client,
         public Logger $logger,
     )
@@ -58,7 +58,7 @@ return (function (): PaymobExampleBootstrap {
     // Config setup
     // expireAt = minutes
 
-    $config = new PaymobConfigDTO(
+    $config = new PaymobConfig(
         apiKey             : $_ENV['PAYMOB_API_KEY'],
         integrationIdCard  : (int)$_ENV['PAYMOB_INTEGRATION_ID_CARD'],
         integrationIdKiosk : (int)$_ENV['PAYMOB_INTEGRATION_ID_KIOSK'],

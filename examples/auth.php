@@ -17,15 +17,15 @@ declare(strict_types=1);
  * Project: paymob-php
  */
 
-use Maatify\Paymob\DTO\PaymobConfigDTO;
-use Maatify\Paymob\DTO\Auth\TokenResponseDTO;
+use Maatify\Paymob\Config\PaymobConfig;
+use Maatify\Paymob\Authentication\DTO\TokenResponseDTO;
 use Maatify\Paymob\Exception\AuthException;
 use Maatify\Paymob\Exception\NetworkException;
 use Maatify\Paymob\Exception\ApiException;
 use Maatify\Paymob\Exception\PaymobException;
-use Maatify\Paymob\Http\ApiClient;
-use Maatify\Paymob\Repository\InMemoryTokenRepository;
-use Maatify\Paymob\Service\AuthService;
+use Maatify\Paymob\Adapter\ApiClient;
+use Maatify\Paymob\Authentication\Repository\InMemoryTokenRepository;
+use Maatify\Paymob\Authentication\Service\AuthService;
 
 // ───── bootstrap ─────
 
