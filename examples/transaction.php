@@ -27,7 +27,7 @@ $bootstrap = require __DIR__ . '/bootstrap.php';
 
 // Auth + Services
 $repo = new InMemoryTokenRepository();
-$authService = new AuthService($bootstrap->client, $bootstrap->config, $repo, new SystemClock());
+$authService = new AuthService($bootstrap->client, $bootstrap->config, $repo, new SystemClock(new \DateTimeZone('UTC')));
 
 $transactionService = new TransactionService($bootstrap->client, $authService);
 

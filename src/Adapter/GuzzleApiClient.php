@@ -1,13 +1,4 @@
 <?php
-/**
- * Created by Maatify.dev
- * User: Maatify.dev
- * Date: 2025-09-06
- * Time: 12:56
- * Project: opay-checkout-php
- * IDE: PhpStorm
- * https://www.Maatify.dev
- */
 
 declare(strict_types=1);
 
@@ -15,108 +6,38 @@ namespace Maatify\Paymob\Adapter;
 
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
+use GuzzleHttp\Exception\RequestException;
 use Maatify\Paymob\Config\PaymobConfig;
-use Maatify\Paymob\Exception\ApiException;
 use Maatify\Paymob\Exception\NetworkException;
+use Maatify\Paymob\Exception\OptionalCapabilityUnavailableException;
 use Psr\Log\LoggerInterface;
+use Throwable;
 
 final readonly class GuzzleApiClient implements ApiClientInterface
 {
     private Client $client;
 
-    public function __construct(
-        private PaymobConfig $config,
-        private ?LoggerInterface $logger = null,
-        private string $channel = 'paymob.guzzle'
-    ) {
-        $this->client = new Client(['base_uri' => $this->config->baseUrl]);
-    }
-
-    /**
-     * @param   string  $uri
-     * @param   array   $body
-     * @param   array   $headers
-     *
-     * * @return array
-     *
-     * @throws NetworkException
-     * @throws ApiException
-     */
-    public function post(string $uri, array $body, array $headers = []): array
+    public function __construct(PaymobConfig $config, private ?LoggerInterface $logger = null, private string $channel = 'paymob.guzzle')
     {
-        $payload = json_encode($body, JSON_UNESCAPED_SLASHES);
-        $defaultHeaders = ['Content-Type: application/json'];
-        $headers = array_merge($defaultHeaders, $headers);
-        try {
-            $response = $this->client->post($uri, [
-                'body'    => $payload,
-//                'json'    => $body,
-                'headers' => $headers,
-                'timeout' => 30,
-            ]);
-        } catch (GuzzleException $e) {
-            $this->logger?->error("[{$this->channel}] Network request failed", ['uri'=>$uri,'body'=>$body,'error'=>$e->getMessage()]);
-            throw new NetworkException("Network error: {$e->getMessage()}");
-        }
-
-        $status = $response->getStatusCode();
-        $result = (string)$response->getBody();
-        $decoded = json_decode($result, true);
-
-        if (!is_array($decoded)) {
-            $this->logger?->warning("[{$this->channel}] Invalid JSON response", ['uri'=>$uri,'body'=>$body,'result'=>$result]);
-            throw new ApiException("Invalid JSON response", $status, ['raw' => $result]);
-        }
-
-        if ($status > 400) {
-            $this->logger?->error("[{$this->channel}] API returned error", ['uri'=>$uri,'body'=>$body,'decoded'=>$decoded]);
-            throw new ApiException("API Error", $status, $decoded);
-        }
-
-        $this->logger?->info("[{$this->channel}] Request success", ['uri'=>$uri,'body'=>$body,'decoded'=>$decoded]);
-        return $decoded;
+        if (!class_exists(Client::class)) throw new OptionalCapabilityUnavailableException('The Guzzle adapter requires guzzlehttp/guzzle ^7.0.');
+        $this->client = new Client(['base_uri' => $config->baseUrl, 'http_errors' => false, 'timeout' => 30, 'verify' => true]);
     }
 
-    /**
-     * @param   string  $uri
-     * @param   array   $query
-     * @param   array   $headers
-     *
-     *  * @return array
-     *
-     * @throws NetworkException
-     * @throws ApiException
-     */
-    public function get(string $uri, array $query = [], array $headers = []): array
+    public function post(string $uri, array $body, array $headers = []): array { return $this->send('POST', $uri, ['json' => $body, 'headers' => $headers]); }
+    public function get(string $uri, array $query = [], array $headers = []): array { return $this->send('GET', $uri, ['query' => $query, 'headers' => $headers]); }
+
+    private function send(string $method, string $uri, array $options): array
     {
-        try {
-            $response = $this->client->get($uri, [
-                'query'   => $query,
-                'headers' => $headers,
-                'timeout' => 30,
-            ]);
-        } catch (GuzzleException $e) {
-            $this->logger?->error("[{$this->channel}] Network request failed", ['uri'=>$uri,'query'=>$query,'error'=>$e->getMessage()]);
-            throw new NetworkException("Network error: {$e->getMessage()}");
+        try { $response = $this->client->request($method, $uri, $options); }
+        catch (GuzzleException $e) {
+            if ($e instanceof RequestException && $e->hasResponse()) {
+                $response = $e->getResponse();
+                if ($response !== null) return ResponseDecoder::decode($response->getStatusCode(), (string) $response->getBody());
+            }
+            throw new NetworkException('Paymob transport failed before an HTTP response was received.', previous: $e);
         }
-
         $status = $response->getStatusCode();
-        $result = (string)$response->getBody();
-        $decoded = json_decode($result, true);
-
-        if (!is_array($decoded)) {
-            $this->logger?->warning("[{$this->channel}] Invalid JSON response", ['uri'=>$uri,'query'=>$query,'result'=>$result]);
-            throw new ApiException("Invalid JSON response", $status, ['raw' => $result]);
-        }
-
-        if ($status > 400) {
-            $this->logger?->error("[{$this->channel}] API returned error", ['uri'=>$uri,'query'=>$query,'decoded'=>$decoded]);
-            throw new ApiException("API Error", $status, $decoded);
-        }
-
-        $this->logger?->info("[{$this->channel}] Request success", ['uri'=>$uri,'query'=>$query,'decoded'=>$decoded]);
-        return $decoded;
+        $this->logger?->debug('Paymob HTTP response received.', ['method' => $method, 'uri' => parse_url($uri, PHP_URL_PATH) ?: '/', 'status' => $status]);
+        return ResponseDecoder::decode($status, (string) $response->getBody());
     }
-
-
 }

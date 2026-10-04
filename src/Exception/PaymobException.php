@@ -1,36 +1,26 @@
 <?php
-/**
- * Created by Maatify.dev
- * User: Maatify.dev
- * Date: 2025-09-16
- * Time: 16:55
- * Project: paymob-php
- * IDE: PhpStorm
- * https://www.Maatify.dev
- */
 
 declare(strict_types=1);
 
 namespace Maatify\Paymob\Exception;
 
-use RuntimeException;
+use Maatify\Exceptions\Exception\MaatifyException;
+use Maatify\Exceptions\Contracts\ErrorCategoryInterface;
+use Maatify\Exceptions\Contracts\ErrorCodeInterface;
+use Maatify\Exceptions\Enum\ErrorCategoryEnum;
+use Maatify\Exceptions\Enum\ErrorCodeEnum;
+use Throwable;
 
-class PaymobException extends RuntimeException
+class PaymobException extends MaatifyException implements PaymobExceptionInterface
 {
-    protected ?array $response;
-
-    public function __construct(
-        string $message,
-        int $code = 0,
-        ?array $response = null,
-        ?\Throwable $previous = null
-    ) {
-        parent::__construct($message, $code, $previous);
-        $this->response = $response;
-    }
-
-    public function getResponse(): ?array
+    public function __construct(string $message, int $code = 0, protected array|string|null $response = null, ?Throwable $previous = null, ?int $httpStatus = null)
     {
-        return $this->response;
+        parent::__construct($message, $code, $previous, httpStatusOverride: $httpStatus);
     }
+
+    public function getResponse(): array|string|null { return $this->response; }
+
+    protected function defaultErrorCode(): ErrorCodeInterface { return ErrorCodeEnum::MAATIFY_ERROR; }
+    protected function defaultCategory(): ErrorCategoryInterface { return ErrorCategoryEnum::SYSTEM; }
+    protected function defaultHttpStatus(): int { return 500; }
 }

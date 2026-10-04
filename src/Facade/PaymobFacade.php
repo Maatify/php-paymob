@@ -55,10 +55,10 @@ final class PaymobFacade
         private readonly string $channel = 'paymob.facade.kiosk'
     ) {
         $this->auth   = new AuthService($this->http, $this->config, $this->repo, $this->clock);
-        $this->orders = new OrderService($this->http, $this->config, $this->auth);
+        $this->orders = new OrderService($this->http, $this->auth);
         $this->keys   = new PaymentKeyService($this->http, $this->auth);
         $this->kiosk  = new KioskPaymentService($this->http, $this->auth);
-        $this->wallet = new WalletPaymentService($this->http, $this->auth);
+        $this->wallet = new WalletPaymentService($this->http);
     }
 
     /**
@@ -78,14 +78,10 @@ final class PaymobFacade
             // 0. Prefetch Auth
             /** @var TokenResponseDTO $token */
             $token = $this->auth->getToken();
-            $this->logger?->info("[{$this->channel}.auth] Token retrieved", [
-                'token_hash' => substr(sha1($token->token), 0, 12)
-            ]);
 
             // 1. Create Order
             /** @var OrderResponseDTO $order */
             $order = $this->orders->createOrder($orderRequest);
-            $this->logger?->info("[{$this->channel}.order] Order created", ['id' => $order->id]);
 
             // 2. Generate Payment Key
             $keyRequest = new GeneratePaymentKeyCommand(
@@ -105,18 +101,10 @@ final class PaymobFacade
             $kiosk = $this->kiosk->pay(
                 new InitiateKioskPaymentCommand($paymentKey->token)
             );
-            $this->logger?->info("[{$this->channel}.payment] Kiosk payment initiated", [
-                'transaction_id' => $kiosk->transactionId,
-                'bill_ref'       => $kiosk->billReference
-            ]);
 
             return new KioskFlowResultDTO($order, $kiosk);
 
         } catch (Throwable $e) {
-            $this->logger?->error("[{$this->channel}] payViaKiosk failed", [
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString()
-            ]);
             throw $e;
         }
     }
@@ -138,12 +126,10 @@ final class PaymobFacade
         // 0. Prefetch Auth
         /** @var TokenResponseDTO $token */
         $token = $this->auth->getToken();
-        $this->logger?->info("[{$this->channel}] Auth token retrieved");
 
         // 1. Create Order
         /** @var OrderResponseDTO $order */
         $order = $this->orders->createOrder($orderRequest);
-        $this->logger?->info("[{$this->channel}] Order created", ['id' => $order->id]);
 
         // 2. Generate Payment Key
         $keyRequest = new GeneratePaymentKeyCommand(
@@ -155,7 +141,6 @@ final class PaymobFacade
         );
         /** @var PaymentKeyResponseDTO $paymentKey */
         $paymentKey = $this->keys->generate($keyRequest);
-        $this->logger?->info("[{$this->channel}] Payment key generated");
 
         // 3. Wallet Payment
         /** @var WalletPaymentResponseDTO $wallet */
@@ -165,10 +150,6 @@ final class PaymobFacade
                 phoneNumber: $walletNumber
             )
         );
-        $this->logger?->info("[{$this->channel}] Wallet payment initiated", [
-            'transaction_id' => $wallet->transactionId,
-            'redirect_url'   => $wallet->redirectUrl
-        ]);
 
         return new WalletFlowResultDTO($order, $wallet);
     }

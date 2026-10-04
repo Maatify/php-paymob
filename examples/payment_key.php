@@ -30,8 +30,8 @@ use Maatify\Paymob\Exception\{AuthException, ApiException, NetworkException, Ord
 
 // Auth + Services
 $repo = new InMemoryTokenRepository();
-$authService = new AuthService($bootstrap->client, $bootstrap->config, $repo, new SystemClock());
-$orderService = new OrderService($bootstrap->client, $bootstrap->config, $authService);
+$authService = new AuthService($bootstrap->client, $bootstrap->config, $repo, new SystemClock(new \DateTimeZone('UTC')));
+$orderService = new OrderService($bootstrap->client, $authService);
 $paymentKeyService = new PaymentKeyService($bootstrap->client, $authService);
 
 // Step 1: Create order

@@ -14,8 +14,9 @@ declare(strict_types=1);
 namespace Maatify\Paymob\Payment\DTO;
 
 use Maatify\Paymob\Enum\CurrencyEnum;
+use Maatify\Paymob\Exception\ApiException;
 
-final readonly class KioskPaymentResponseDTO
+final readonly class KioskPaymentResponseDTO implements \JsonSerializable
 {
     public function __construct(
         public int $transactionId,
@@ -35,16 +36,23 @@ final readonly class KioskPaymentResponseDTO
 
     public static function fromArray(array $response): self
     {
+        foreach (['id', 'amount_cents', 'pending', 'success', 'currency', 'order'] as $field) {
+            if (!array_key_exists($field, $response)) throw new ApiException("Paymob Kiosk response is missing required field: {$field}.", null, $response);
+        }
+        if (!is_int($response['id']) || $response['id'] <= 0 || !is_int($response['amount_cents']) || $response['amount_cents'] <= 0
+            || !is_bool($response['pending']) || !is_bool($response['success']) || !is_string($response['currency'])
+            || !is_array($response['order']) || !isset($response['order']['id']) || !is_int($response['order']['id']) || $response['order']['id'] <= 0
+            || !isset($response['order']['merchant_order_id']) || !is_string($response['order']['merchant_order_id'])) {
+            throw new ApiException('Paymob Kiosk response contains invalid required fields.', null, $response);
+        }
         return new self(
             transactionId  : (int)$response['id'],
-            orderId        : (int)($response['order']['id'] ?? 0),
-            merchantOrderId: $response['order']['merchant_order_id'] ?? '',
-            amountCents    : (int)($response['amount_cents'] ?? 0),
-            currency       : isset($response['currency'])
-                ? CurrencyEnum::from($response['currency'])
-                : CurrencyEnum::EGP, // fallback default
-            pending        : (bool)($response['pending'] ?? false),
-            success        : (bool)($response['success'] ?? false),
+            orderId        : $response['order']['id'],
+            merchantOrderId: $response['order']['merchant_order_id'],
+            amountCents    : $response['amount_cents'],
+            currency       : CurrencyEnum::from($response['currency']),
+            pending        : $response['pending'],
+            success        : $response['success'],
             billReference  : $response['data']['bill_reference'] ?? null,
             statusMessage  : $response['data']['message'] ?? null,
             paymentStatus  : $response['order']['payment_status'] ?? null,

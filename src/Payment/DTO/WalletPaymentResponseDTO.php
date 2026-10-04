@@ -14,8 +14,9 @@ declare(strict_types=1);
 namespace Maatify\Paymob\Payment\DTO;
 
 use Maatify\Paymob\Enum\CurrencyEnum;
+use Maatify\Paymob\Exception\ApiException;
 
-final readonly class WalletPaymentResponseDTO
+final readonly class WalletPaymentResponseDTO implements \JsonSerializable
 {
     public function __construct(
         public int $transactionId,
@@ -34,14 +35,23 @@ final readonly class WalletPaymentResponseDTO
 
     public static function fromArray(array $response): self
     {
+        foreach (['id', 'amount_cents', 'currency', 'success', 'pending', 'created_at', 'order'] as $field) {
+            if (!array_key_exists($field, $response)) throw new ApiException("Paymob Wallet response is missing required field: {$field}.", null, $response);
+        }
+        if (!is_int($response['id']) || $response['id'] <= 0 || !is_int($response['amount_cents']) || $response['amount_cents'] <= 0
+            || !is_string($response['currency']) || !is_bool($response['success']) || !is_bool($response['pending'])
+            || !is_string($response['created_at']) || !is_array($response['order']) || !isset($response['order']['id'])
+            || !is_int($response['order']['id']) || $response['order']['id'] <= 0) {
+            throw new ApiException('Paymob Wallet response contains invalid required fields.', null, $response);
+        }
         return new self(
             transactionId: (int)$response['id'],
-            orderId      : (int)$response['order']['id'],
-            amountCents  : (int)$response['amount_cents'],
+            orderId      : $response['order']['id'],
+            amountCents  : $response['amount_cents'],
             currency     : CurrencyEnum::from($response['currency']),
-            success      : (bool)$response['success'],
-            pending      : (bool)$response['pending'],
-            createdAt    : $response['created_at'] ?? '',
+            success      : $response['success'],
+            pending      : $response['pending'],
+            createdAt    : $response['created_at'],
             updatedAt    : $response['updated_at'] ?? null,
             redirectUrl  : $response['redirect_url'] ?? null,
             statusMessage: $response['data']['message'] ?? null

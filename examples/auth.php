@@ -42,7 +42,7 @@ $logger = $bootstrap->logger;
 $repo = new InMemoryTokenRepository();
 
 // AuthService
-$authService = new AuthService($client, $config, $repo, new SystemClock());
+$authService = new AuthService($client, $config, $repo, new SystemClock(new \DateTimeZone('UTC')));
 
 // ───── التنفيذ ─────
 try {

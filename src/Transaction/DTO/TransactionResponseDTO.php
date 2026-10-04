@@ -14,8 +14,9 @@ declare(strict_types=1);
 namespace Maatify\Paymob\Transaction\DTO;
 
 use Maatify\Paymob\Enum\CurrencyEnum;
+use Maatify\Paymob\Exception\ApiException;
 
-final readonly class TransactionResponseDTO
+final readonly class TransactionResponseDTO implements \JsonSerializable
 {
     public function __construct(
         public int $id,
@@ -49,18 +50,28 @@ final readonly class TransactionResponseDTO
 
     public static function fromArray(array $data): self
     {
+        foreach (['id', 'amount_cents', 'currency', 'success', 'pending', 'is_captured', 'is_refunded', 'is_voided', 'is_3d_secure', 'is_standalone_payment'] as $field) {
+            if (!array_key_exists($field, $data)) throw new ApiException("Paymob Transaction response is missing required field: {$field}.", null, $data);
+        }
+        if (!is_int($data['id']) || $data['id'] <= 0 || !is_int($data['amount_cents']) || $data['amount_cents'] <= 0
+            || !is_string($data['currency'])) throw new ApiException('Paymob Transaction response contains invalid required fields.', null, $data);
+        foreach (['success', 'pending', 'is_captured', 'is_refunded', 'is_voided', 'is_3d_secure', 'is_standalone_payment'] as $field) {
+            if (!is_bool($data[$field])) throw new ApiException("Paymob Transaction response has an invalid boolean field: {$field}.", null, $data);
+        }
+        $orderId = $data['order']['id'] ?? $data['order_id'] ?? null;
+        if (!is_int($orderId) || $orderId <= 0) throw new ApiException('Paymob Transaction response is missing a valid order ID.', null, $data);
         return new self(
-            id                 : (int)($data['id'] ?? 0),
-            orderId            : (int)($data['order']['id'] ?? $data['order_id'] ?? 0),
-            amountCents        : (int)($data['amount_cents'] ?? 0),
-            currency           : isset($data['currency']) ? CurrencyEnum::from($data['currency']) : CurrencyEnum::EGP,
-            success            : (bool)($data['success'] ?? false),
-            pending            : (bool)($data['pending'] ?? false),
-            isCaptured         : (bool)($data['is_captured'] ?? false),
-            isRefunded         : (bool)($data['is_refunded'] ?? false),
-            isVoided           : (bool)($data['is_voided'] ?? false),
-            is3DSecure         : (bool)($data['is_3d_secure'] ?? false),
-            isStandalonePayment: (bool)($data['is_standalone_payment'] ?? false),
+            id                 : $data['id'],
+            orderId            : $orderId,
+            amountCents        : $data['amount_cents'],
+            currency           : CurrencyEnum::from($data['currency']),
+            success            : $data['success'],
+            pending            : $data['pending'],
+            isCaptured         : $data['is_captured'],
+            isRefunded         : $data['is_refunded'],
+            isVoided           : $data['is_voided'],
+            is3DSecure          : $data['is_3d_secure'],
+            isStandalonePayment: $data['is_standalone_payment'],
             integrationId      : $data['integration_id'] ?? null,
             profileId          : $data['profile_id'] ?? null,
             merchantId         : $data['order']['merchant']['id'] ?? null,
@@ -81,4 +92,3 @@ final readonly class TransactionResponseDTO
     }
     public function jsonSerialize(): array { return get_object_vars($this); }
 }
-

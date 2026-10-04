@@ -6,7 +6,7 @@ namespace Maatify\Paymob\Callback\Service;
 
 use Maatify\Paymob\Config\PaymobConfig;
 use Maatify\Paymob\Callback\DTO\ReturnUrlResponseDTO;
-use RuntimeException;
+use Maatify\Paymob\Exception\ReturnUrlException;
 
 /**
  * Validates Paymob's customer-facing Transaction Response redirect and returns its result.
@@ -33,51 +33,51 @@ final readonly class ReturnUrlHandler
      * Invalid input or an empty configured secret fails closed. The message is
      * unsigned and must not drive payment or order state decisions.
      *
-     * @throws RuntimeException When the query or HMAC configuration is invalid.
+     * @throws ReturnUrlException When the query or HMAC configuration is invalid.
      */
     public function parse(array $query): ReturnUrlResponseDTO
     {
         if ($this->config->hmacSecret === '') {
-            throw new RuntimeException('Return URL HMAC secret must not be empty');
+            throw new ReturnUrlException('Return URL HMAC secret must not be empty');
         }
 
         $providedHmac = $query['hmac'] ?? null;
         if (!is_string($providedHmac) || $providedHmac === '') {
-            throw new RuntimeException('Return URL HMAC must be a non-empty string');
+            throw new ReturnUrlException('Return URL HMAC must be a non-empty string');
         }
 
         foreach (['success', 'pending'] as $field) {
             if (!isset($query[$field]) || !in_array($query[$field], ['true', 'false'], true)) {
-                throw new RuntimeException("Invalid {$field} query value for return URL");
+                throw new ReturnUrlException("Invalid {$field} query value for return URL");
             }
         }
 
         $hasOrder = array_key_exists('order', $query);
         $hasOrderId = array_key_exists('order_id', $query);
         if (!$hasOrder && !$hasOrderId) {
-            throw new RuntimeException('Missing order query value for return URL');
+            throw new ReturnUrlException('Missing order query value for return URL');
         }
 
         if ($hasOrder && (!is_string($query['order']) || $query['order'] === '')) {
-            throw new RuntimeException('Invalid order query value for return URL');
+            throw new ReturnUrlException('Invalid order query value for return URL');
         }
 
         if ($hasOrderId && (!is_string($query['order_id']) || $query['order_id'] === '')) {
-            throw new RuntimeException('Invalid order_id query value for return URL');
+            throw new ReturnUrlException('Invalid order_id query value for return URL');
         }
 
         if ($hasOrder && $hasOrderId && $query['order'] !== $query['order_id']) {
-            throw new RuntimeException('Conflicting order query values for return URL');
+            throw new ReturnUrlException('Conflicting order query values for return URL');
         }
 
         $canonicalOrder = $hasOrder ? $query['order'] : $query['order_id'];
         if (!$this->validateHmac($query, $providedHmac, $canonicalOrder)) {
-            throw new RuntimeException('Invalid HMAC signature for return URL');
+            throw new ReturnUrlException('Invalid HMAC signature for return URL');
         }
 
         $message = $query['data_message'] ?? null;
         if ($message !== null && !is_string($message)) {
-            throw new RuntimeException('Invalid data_message query value for return URL');
+            throw new ReturnUrlException('Invalid data_message query value for return URL');
         }
 
         return new ReturnUrlResponseDTO(
@@ -100,7 +100,7 @@ final readonly class ReturnUrlHandler
      * array keys. data_message is outside these 20 signed values. Missing or
      * non-string signed fields cannot contribute an implicit empty value.
      *
-     * @throws RuntimeException When a signed field is missing or is not a string.
+     * @throws ReturnUrlException When a signed field is missing or is not a string.
      */
     private function validateHmac(array $query, string $providedHmac, string $canonicalOrder): bool
     {
@@ -136,7 +136,7 @@ final readonly class ReturnUrlHandler
             }
 
             if (!array_key_exists($field, $query) || !is_string($query[$field])) {
-                throw new RuntimeException("Missing or invalid {$field} query value for return URL");
+                throw new ReturnUrlException("Missing or invalid {$field} query value for return URL");
             }
 
             $concatenated .= $query[$field];

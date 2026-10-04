@@ -36,7 +36,6 @@ try {
     // Order service
     $orderService = new OrderService(
         http: $bootstrap->client,
-        config: $bootstrap->config,
         authService: $authService
     );
 

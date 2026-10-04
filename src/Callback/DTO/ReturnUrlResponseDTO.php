@@ -13,7 +13,7 @@ declare(strict_types=1);
 
 namespace Maatify\Paymob\Callback\DTO;
 
-final readonly class ReturnUrlResponseDTO
+final readonly class ReturnUrlResponseDTO implements \JsonSerializable
 {
     public function __construct(
         public int     $transactionId,

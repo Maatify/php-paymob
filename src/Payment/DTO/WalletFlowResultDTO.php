@@ -16,7 +16,7 @@ namespace Maatify\Paymob\Payment\DTO;
 use Maatify\Paymob\Order\DTO\OrderResponseDTO;
 use Maatify\Paymob\Payment\DTO\WalletPaymentResponseDTO;
 
-final readonly class WalletFlowResultDTO
+final readonly class WalletFlowResultDTO implements \JsonSerializable
 {
     public function __construct(
         public OrderResponseDTO $order,

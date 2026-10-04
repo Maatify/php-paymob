@@ -57,9 +57,7 @@ final readonly class VerificationConfig
         $values = Dotenv::parse($contents);
         $apiKey = self::required($values, 'PAYMOB_API_KEY');
         $baseUrl = rtrim(self::required($values, 'PAYMOB_BASE_URL'), '/');
-        $hmacSecret = isset($values['PAYMOB_HMAC_SECRET']) && trim($values['PAYMOB_HMAC_SECRET']) !== ''
-            ? trim($values['PAYMOB_HMAC_SECRET'])
-            : '';
+        $hmacSecret = self::required($values, 'PAYMOB_HMAC_SECRET');
 
         if ($baseUrl !== 'https://accept.paymob.com/api') {
             throw new RuntimeException('PAYMOB_BASE_URL does not match the Paymob Egypt API base URL.');

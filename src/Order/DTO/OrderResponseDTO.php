@@ -16,7 +16,7 @@ namespace Maatify\Paymob\Order\DTO;
 use Maatify\Paymob\Order\DTO\OrderItemCollectionDTO;
 use Maatify\Paymob\Enum\CurrencyEnum;
 
-final readonly class OrderResponseDTO
+final readonly class OrderResponseDTO implements \JsonSerializable
 {
     public function __construct(
         public int $id,

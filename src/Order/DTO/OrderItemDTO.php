@@ -13,7 +13,9 @@ declare(strict_types=1);
 
 namespace Maatify\Paymob\Order\DTO;
 
-final readonly class OrderItemDTO
+use Maatify\Paymob\Exception\ApiException;
+
+final readonly class OrderItemDTO implements \JsonSerializable
 {
     public function __construct(
         public string $name,
@@ -24,10 +26,15 @@ final readonly class OrderItemDTO
 
     public static function fromArray(array $data): self
     {
+        if (!isset($data['name'], $data['amount_cents'], $data['quantity']) || !is_string($data['name'])
+            || !is_int($data['amount_cents']) || !is_int($data['quantity'])
+            || (isset($data['description']) && !is_string($data['description']))) {
+            throw new ApiException('Paymob order item response has invalid required fields.', null, $data);
+        }
         return new self(
             name: $data['name'],
-            amountCents: (int) $data['amount_cents'],
-            quantity: (int) $data['quantity'],
+            amountCents: $data['amount_cents'],
+            quantity: $data['quantity'],
             description: $data['description'] ?? null
         );
     }

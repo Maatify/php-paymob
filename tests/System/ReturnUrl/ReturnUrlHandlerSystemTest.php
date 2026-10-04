@@ -295,7 +295,7 @@ final class ReturnUrlHandlerSystemTest extends TestCase
 
     public function testEmptyConfiguredHmacSecretIsRejected(): void
     {
-        $this->expectException(RuntimeException::class);
+        $this->expectException(\InvalidArgumentException::class);
         $this->expectExceptionMessage('HMAC secret must not be empty');
 
         $this->handler('')->parse($this->validQuery());

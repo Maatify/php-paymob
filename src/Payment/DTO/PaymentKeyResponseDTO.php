@@ -13,20 +13,12 @@ declare(strict_types=1);
 
 namespace Maatify\Paymob\Payment\DTO;
 
-final readonly class PaymentKeyResponseDTO
+final readonly class PaymentKeyResponseDTO implements \JsonSerializable
 {
     public function __construct(
         public string $token,
         public int $orderId,
     ) {}
 
-    public static function fromArray(array $data): self
-    {
-        return new self(
-            token: $data['token'],
-            orderId: (int)($data['order'] ?? 0),
-        );
-    }
     public function jsonSerialize(): array { return get_object_vars($this); }
 }
-

@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Maatify\Paymob\ProviderVerification\Support;
 
 use Maatify\Paymob\Order\ValueObject\OrderItem;
-use Maatify\Paymob\Order\DTO\OrderItemCollectionDTO;
 use Maatify\Paymob\Order\Command\CreateOrderCommand;
 use Maatify\Paymob\Payment\ValueObject\BillingData;
 use Maatify\Paymob\Payment\Command\InitiateKioskPaymentCommand;
@@ -173,7 +172,7 @@ final class VerificationContext
     private function execute(): array
     {
         $configDTO = $this->config->packageConfig();
-        $authService = new AuthService($this->apiClient, $configDTO, $this->tokenRepository, new SystemClock());
+        $authService = new AuthService($this->apiClient, $configDTO, $this->tokenRepository, new SystemClock(new \DateTimeZone('UTC')));
         $results = [];
 
         $this->setStage('auth');
@@ -220,10 +219,10 @@ final class VerificationContext
             return ['result' => 'PASS', 'scenario' => 'transaction-inquiry', 'service_results' => $results];
         }
 
-        $orderService = new OrderService($this->apiClient, $configDTO, $authService);
+        $orderService = new OrderService($this->apiClient, $authService);
         $paymentKeyService = new PaymentKeyService($this->apiClient, $authService);
         $kioskService = new KioskPaymentService($this->apiClient, $authService);
-        $walletService = new WalletPaymentService($this->apiClient, $authService);
+        $walletService = new WalletPaymentService($this->apiClient);
 
         $this->setStage('order');
         $orderResponse = $orderService->createOrder($this->syntheticOrderRequest());
@@ -251,7 +250,7 @@ final class VerificationContext
             amountCents: 15000,
             currency: CurrencyEnum::EGP,
             billingData: $this->syntheticBillingData(),
-            expirationMinutes: 180,
+            expirationSeconds: 180,
         ));
         $this->assertPaymentKeyOrderMapping($orderResponse->id, $paymentKeyResponse->orderId);
         $results['payment_key'] = [

@@ -7,11 +7,11 @@ require_once __DIR__ . '/bootstrap.php';
 use Maatify\Paymob\Payment\Command\InitiateKioskPaymentCommand;
 use Maatify\Paymob\Payment\DTO\KioskPaymentResponseDTO;
 use Maatify\Paymob\Order\ValueObject\OrderItem;
-use Maatify\Paymob\Order\DTO\OrderItemCollectionDTO;
 use Maatify\Paymob\Order\Command\CreateOrderCommand;
 use Maatify\Paymob\Payment\ValueObject\BillingData;
 use Maatify\Paymob\Payment\Command\GeneratePaymentKeyCommand;
 use Maatify\Paymob\Authentication\DTO\TokenResponseDTO;
+use Maatify\Paymob\Authentication\ValueObject\TokenScope;
 use Maatify\Paymob\Exception\ApiException;
 use Maatify\Paymob\Adapter\ApiClientInterface;
 use Maatify\Paymob\Authentication\Repository\InMemoryTokenRepository;
@@ -139,7 +139,7 @@ $makeSyntheticPaymentKeyRequest = static function (int $integrationId, string $a
             postalCode: '00000',
             state: 'Synthetic State',
         ),
-        expirationMinutes: 180,
+        expirationSeconds: 180,
     ))->toArray($authToken);
 };
 
@@ -243,44 +243,15 @@ try {
         'Live capture does not classify the actual request before cURL or persist that shared stage.',
     );
 
-    $guzzleGetMethod = new ReflectionMethod(\Maatify\Paymob\Adapter\GuzzleApiClient::class, 'get');
-    $guzzleSourcePath = $guzzleGetMethod->getFileName();
-    verify(is_string($guzzleSourcePath), 'Guzzle GET source path could not be resolved.');
-    $guzzleSourceLines = file($guzzleSourcePath);
-    verify(is_array($guzzleSourceLines), 'Guzzle GET source could not be read.');
-    $guzzleGetSource = implode('', array_slice(
-        $guzzleSourceLines,
-        $guzzleGetMethod->getStartLine() - 1,
-        $guzzleGetMethod->getEndLine() - $guzzleGetMethod->getStartLine() + 1,
-    ));
-    $guzzleGetTokens = [];
-    foreach (token_get_all("<?php\n" . $guzzleGetSource) as $token) {
-        if (is_array($token) && in_array($token[0], [T_OPEN_TAG, T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
-            continue;
-        }
-        $guzzleGetTokens[] = is_array($token) ? $token[1] : $token;
-    }
-    $guzzleCallPrefix = ['$this', '->', 'client', '->', 'get', '('];
-    $guzzleCallPositions = [];
-    for ($index = 0; $index < count($guzzleGetTokens); $index++) {
-        if (array_slice($guzzleGetTokens, $index, count($guzzleCallPrefix)) === $guzzleCallPrefix) {
-            $guzzleCallPositions[] = $index;
-        }
-    }
-    $expectedGuzzleGetCall = [
-        '$this', '->', 'client', '->', 'get', '(', '$uri', ',', '[',
-        "'query'", '=>', '$query', ',',
-        "'headers'", '=>', '$headers', ',',
-        "'timeout'", '=>', '30', ',',
-        ']', ')',
-    ];
+    $guzzleSource = file_get_contents(dirname(__DIR__, 2) . '/src/Adapter/GuzzleApiClient.php');
     verify(
-        count($guzzleCallPositions) === 1
-        && array_slice($guzzleGetTokens, $guzzleCallPositions[0], count($expectedGuzzleGetCall))
-            === $expectedGuzzleGetCall,
+        is_string($guzzleSource)
+        && str_contains($guzzleSource, 'return $this->send(\'GET\', $uri, [\'query\' => $query, \'headers\' => $headers]);')
+        && str_contains($guzzleSource, '$this->client->request($method, $uri, $options)')
+        && str_contains($guzzleSource, "'http_errors' => false"),
         'GuzzleApiClient::get() no longer forwards query, caller headers, and timeout to its request options.',
     );
-    echo "PASS Guzzle GET caller headers and request-option source contract\n";
+    echo "PASS Guzzle GET caller headers and provider-response classification contract\n";
 
     $verificationContextSource = file_get_contents(__DIR__ . '/Support/VerificationContext.php');
     verify(
@@ -735,25 +706,25 @@ JSON;
     $configurationDirectory = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'paymob-provider-config-check-' . bin2hex(random_bytes(8));
     verify(mkdir($configurationDirectory, 0700), 'Could not create a private synthetic configuration directory.');
     $configurationPath = $configurationDirectory . DIRECTORY_SEPARATOR . '.env';
-    $configuration = "PAYMOB_API_KEY=self-check-api-key-value\nPAYMOB_BASE_URL=https://accept.paymob.com/api\nPAYMOB_TEST_TRANSACTION_ID=42\n";
+    $configuration = "PAYMOB_API_KEY=self-check-api-key-value\nPAYMOB_HMAC_SECRET=self-check-hmac-secret\nPAYMOB_BASE_URL=https://accept.paymob.com/api\nPAYMOB_INTEGRATION_ID_CARD=980001\nPAYMOB_INTEGRATION_ID_KIOSK=980002\nPAYMOB_INTEGRATION_ID_WALLET=980003\nPAYMOB_TEST_TRANSACTION_ID=42\n";
     verify(file_put_contents($configurationPath, $configuration) === strlen($configuration), 'Could not write a synthetic configuration file.');
     chmod($configurationPath, 0600);
-    $optionalHmacConfig = VerificationConfig::load($configurationDirectory, 'auth');
-    verify($optionalHmacConfig->hmacSecret === '', 'Auth verification required an absent HMAC secret.');
+    $authConfig = VerificationConfig::load($configurationDirectory, 'auth');
+    verify($authConfig->hmacSecret === 'self-check-hmac-secret', 'Auth verification did not retain the required HMAC secret.');
     verify(
-        $optionalHmacConfig->configuredSecrets() === ['self-check-api-key-value'],
-        'Configured secret list included an absent or empty HMAC value.',
+        $authConfig->configuredSecrets() === ['self-check-api-key-value', 'self-check-hmac-secret'],
+        'Configured secret list did not include both required credentials.',
     );
-    echo "PASS scenario HMAC optionality and configured-secret filtering\n";
+    echo "PASS required credential handling and configured-secret filtering\n";
 
     $transactionConfig = VerificationConfig::load($configurationDirectory, 'transaction-inquiry');
     verify(
         $transactionConfig->testTransactionId === 42
-        && $transactionConfig->cardIntegrationId === null
-        && $transactionConfig->kioskIntegrationId === null
-        && $transactionConfig->walletIntegrationId === null
+        && $transactionConfig->cardIntegrationId === 980001
+        && $transactionConfig->kioskIntegrationId === 980002
+        && $transactionConfig->walletIntegrationId === 980003
         && $transactionConfig->walletTestMsisdn === null,
-        'Transaction Inquiry configuration required an unrelated integration or Wallet input.',
+        'Transaction Inquiry configuration did not retain the canonical integration IDs.',
     );
     verify(
         file_put_contents($configurationPath, str_replace('PAYMOB_TEST_TRANSACTION_ID=42' . "\n", '', $configuration)) !== false,
@@ -825,16 +796,21 @@ JSON;
                 'currency' => 'EGP',
                 'success' => false,
                 'pending' => true,
+                'is_captured' => false,
+                'is_refunded' => false,
+                'is_voided' => false,
+                'is_3d_secure' => false,
+                'is_standalone_payment' => true,
             ];
         }
     };
     $transactionTokenRepository = new InMemoryTokenRepository();
-    $transactionTokenRepository->save(new TokenResponseDTO(
+    $transactionTokenRepository->save(TokenScope::fromConfig($transactionConfig->packageConfig()), new TokenResponseDTO(
         'synthetic-initial-auth-token', 77, time(), time() + 3600,
     ));
     $transactionService = new TransactionService(
         $transactionHttp,
-        new AuthService($transactionHttp, $transactionConfig->packageConfig(), $transactionTokenRepository, new SystemClock()),
+        new AuthService($transactionHttp, $transactionConfig->packageConfig(), $transactionTokenRepository, new SystemClock(new \DateTimeZone('UTC'))),
     );
     $transactionDto = $transactionService->getTransaction(42);
     verify(
@@ -1212,6 +1188,8 @@ JSON;
     $recoveryConfig = "PAYMOB_API_KEY=recovery-self-check-api-secret\n"
         . "PAYMOB_HMAC_SECRET=recovery-self-check-hmac-secret\n"
         . "PAYMOB_BASE_URL=https://accept.paymob.com/api\n"
+        . "PAYMOB_INTEGRATION_ID_CARD=980001\n"
+        . "PAYMOB_INTEGRATION_ID_KIOSK=980002\n"
         . "PAYMOB_INTEGRATION_ID_WALLET=980003\n"
         . "PAYMOB_TEST_WALLET_MSISDN=01010101010\n";
     verify(file_put_contents($recoveryConfigPath, $recoveryConfig) === strlen($recoveryConfig), 'Synthetic recovery configuration could not be written.');
@@ -1734,7 +1712,9 @@ JSON;
     $kioskConfig = "PAYMOB_API_KEY={$kioskApiKey}\n"
         . "PAYMOB_HMAC_SECRET={$kioskHmacSecret}\n"
         . "PAYMOB_BASE_URL=https://accept.paymob.com/api\n"
-        . "PAYMOB_INTEGRATION_ID_KIOSK={$kioskIntegrationId}\n";
+        . "PAYMOB_INTEGRATION_ID_CARD=980001\n"
+        . "PAYMOB_INTEGRATION_ID_KIOSK={$kioskIntegrationId}\n"
+        . "PAYMOB_INTEGRATION_ID_WALLET=980003\n";
     verify(
         file_put_contents($kioskConfigPath, $kioskConfig) === strlen($kioskConfig),
         'Synthetic Kiosk configuration could not be written.',
@@ -1743,7 +1723,8 @@ JSON;
     $kioskConfigDTO = VerificationConfig::load($syntheticKioskConfigDirectory, 'kiosk');
     verify(
         $kioskConfigDTO->kioskIntegrationId === $kioskIntegrationId
-        && $kioskConfigDTO->walletIntegrationId === null
+        && $kioskConfigDTO->cardIntegrationId === 980001
+        && $kioskConfigDTO->walletIntegrationId === 980003
         && $kioskConfigDTO->walletTestMsisdn === null,
         'Kiosk recovery configuration incorrectly requires or selects Wallet inputs.',
     );
@@ -1769,6 +1750,7 @@ JSON;
     $paymentKeyConfigPath = $syntheticPaymentKeyConfigDirectory . DIRECTORY_SEPARATOR . '.env';
     $paymentKeyConfig = "PAYMOB_API_KEY=classifier-self-check-api-key\n"
         . "PAYMOB_BASE_URL=https://accept.paymob.com/api\n"
+        . "PAYMOB_HMAC_SECRET=classifier-self-check-hmac-secret\n"
         . "PAYMOB_INTEGRATION_ID_CARD=980001\n"
         . "PAYMOB_INTEGRATION_ID_KIOSK=980002\n"
         . "PAYMOB_INTEGRATION_ID_WALLET=980003\n";
@@ -2206,7 +2188,7 @@ JSON;
     );
     $orderOnlyConfigDTO = VerificationConfig::load($configurationDirectory, 'order');
     verify(
-        $classifyWithCapturingClient($optionalHmacConfig, [[$authUrl, ['api_key' => 'self-check-api-key-value'], []]])
+        $classifyWithCapturingClient($authConfig, [[$authUrl, ['api_key' => 'self-check-api-key-value'], []]])
             === ['auth']
         && $classifyWithCapturingClient($orderOnlyConfigDTO, [
             [$authUrl, ['api_key' => 'self-check-api-key-value'], []],
@@ -2214,7 +2196,7 @@ JSON;
         ]) === ['auth', 'order'],
         'Auth or Order scenario did not use the shared classifier.',
     );
-    $objectAuthClient = $createCapturingClient($optionalHmacConfig);
+    $objectAuthClient = $createCapturingClient($authConfig);
     verify(
         $objectAuthClient->classifyAttemptStage($authUrl, (object)['api_key' => 'self-check-api-key-value']) === 'auth',
         'Shared classifier did not accept retained JSON object request input.',
@@ -2250,7 +2232,7 @@ JSON;
         amountCents: 15000,
         currency: CurrencyEnum::EGP,
         billingData: $cardBilling,
-        expirationMinutes: 180,
+        expirationSeconds: 180,
     );
     $cardPaymentKeyRequest = $cardGeneratePaymentKeyCommand->toArray($cardAuthToken);
     verify(
@@ -2660,7 +2642,7 @@ JSON;
         $expectClassificationFailure($createCapturingClient($config), $url, $request, $description);
         $classifierFailureCases++;
     };
-    $expectClassifierFailureCase($optionalHmacConfig, $authUrl, ['wrong' => 'shape'], 'missing Auth api_key');
+    $expectClassifierFailureCase($authConfig, $authUrl, ['wrong' => 'shape'], 'missing Auth api_key');
     $expectClassifierFailureCase($orderOnlyConfigDTO, $orderUrl, [
         'amount_cents' => 15000,
         'currency' => 'EGP',
@@ -2696,16 +2678,16 @@ JSON;
         $walletUnexpectedInitialAuth,
         'Wallet initial attempt with Auth token',
     );
-    $expectClassifierFailureCase($optionalHmacConfig, 'https://accept.paymob.com/api/unsupported', [
+    $expectClassifierFailureCase($authConfig, 'https://accept.paymob.com/api/unsupported', [
         'api_key' => 'synthetic-api-key',
     ], 'unknown Paymob path');
-    $expectClassifierFailureCase($optionalHmacConfig, 'https://invalid.example/api/auth/tokens', [
+    $expectClassifierFailureCase($authConfig, 'https://invalid.example/api/auth/tokens', [
         'api_key' => 'synthetic-api-key',
     ], 'non-Paymob URL');
-    $expectClassifierFailureCase($optionalHmacConfig, 'http://accept.paymob.com/api/auth/tokens', [
+    $expectClassifierFailureCase($authConfig, 'http://accept.paymob.com/api/auth/tokens', [
         'api_key' => 'synthetic-api-key',
     ], 'non-HTTPS URL');
-    $expectClassifierFailureCase($optionalHmacConfig, $authUrl, 'not-an-object', 'unexpected top-level request type');
+    $expectClassifierFailureCase($authConfig, $authUrl, 'not-an-object', 'unexpected top-level request type');
 
     $inconsistentWalletRetryClient = $createCapturingClient($walletRecoveryConfigDTO);
     verify(

@@ -82,5 +82,5 @@ return (function (): PaymobExampleBootstrap {
         useGuzzle: false
     );
 
-    return new PaymobExampleBootstrap($config, $client, $logger, new SystemClock());
+    return new PaymobExampleBootstrap($config, $client, $logger, new SystemClock(new \DateTimeZone('UTC')));
 })();
