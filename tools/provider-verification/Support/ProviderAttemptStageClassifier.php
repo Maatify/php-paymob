@@ -220,6 +220,43 @@ final class ProviderAttemptStageClassifier
         return false;
     }
 
+    /** Validate retained Intention JSON without credential or callback configuration. */
+    public static function validateRetainedIntentionRequest(mixed $request, int $integrationId): bool
+    {
+        if (!is_array($request) || array_is_list($request)) {
+            return false;
+        }
+        $expected = ['amount', 'currency', 'payment_methods', 'items', 'billing_data', 'special_reference', 'expiration', 'notification_url', 'redirection_url'];
+        $actual = array_keys($request);
+        sort($expected);
+        sort($actual);
+        foreach (['notification_url', 'redirection_url'] as $urlKey) {
+            $url = $request[$urlKey] ?? null;
+            $parts = is_string($url) ? parse_url($url) : false;
+            if (!is_array($parts) || ($parts['scheme'] ?? null) !== 'https' || !is_string($parts['host'] ?? null)
+                || $parts['host'] === '' || isset($parts['user']) || isset($parts['pass']) || isset($parts['fragment'])) {
+                return false;
+            }
+        }
+        $amount = $request['amount'] ?? null;
+        return $actual === $expected && is_int($amount) && $amount > 0
+            && ($request['currency'] ?? null) === 'EGP'
+            && ($request['payment_methods'] ?? null) === [$integrationId]
+            && ($request['items'] ?? null) === [[
+                'name' => 'Synthetic verification item', 'amount' => $amount,
+                'description' => 'Synthetic provider verification item', 'quantity' => 1,
+            ]]
+            && ($request['billing_data'] ?? null) === [
+                'apartment' => '1', 'first_name' => 'Verification', 'last_name' => 'Customer',
+                'street' => 'Synthetic Street', 'building' => '1', 'phone_number' => '+20' . '1000' . str_repeat('0', 6),
+                'city' => 'Cairo', 'country' => 'EG', 'email' => 'verification@example.test',
+                'floor' => '1', 'state' => 'Cairo',
+            ]
+            && is_string($request['special_reference'] ?? null)
+            && preg_match('/^verification-[a-f0-9]{24}$/D', $request['special_reference']) === 1
+            && is_int($request['expiration'] ?? null) && $request['expiration'] >= 1 && $request['expiration'] <= 3600;
+    }
+
     /** Record the actual captured transport and HTTP outcome before response decoding. */
     public function recordOutcome(string $stage, bool $transportOk, ?int $httpStatus): void
     {
@@ -229,6 +266,12 @@ final class ProviderAttemptStageClassifier
         $this->authorizedStage = null;
 
         if (!$transportOk || $httpStatus === null) {
+            $this->nextOperation = 'terminal';
+            $this->pendingRecovery = null;
+            return;
+        }
+
+        if ($this->scenario === 'intention' && $stage === 'create-intention' && $httpStatus === 401) {
             $this->nextOperation = 'terminal';
             $this->pendingRecovery = null;
             return;

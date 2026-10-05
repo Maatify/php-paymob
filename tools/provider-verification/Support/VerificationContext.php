@@ -19,6 +19,7 @@ use Maatify\Paymob\Order\Service\OrderService;
 use Maatify\Paymob\Payment\Service\PaymentKeyService;
 use Maatify\Paymob\Transaction\Service\TransactionService;
 use Maatify\Paymob\Payment\Service\WalletPaymentService;
+use RuntimeException;
 use Throwable;
 
 /** Runs one manual provider flow through package services or an explicit verification-only probe. */
@@ -200,16 +201,12 @@ final class VerificationContext
                 'Authorization' => 'Token ' . $this->config->secretKey,
                 'Content-Type' => 'application/json',
             ]);
-            if ($this->apiClient->lastHttpStatus() !== 201
-                || !ProviderAttemptStageClassifier::validateIntentionResponse(
-                    $response,
-                    (int)$this->config->cardIntegrationId,
-                    $reference,
-                )) {
-                throw new RuntimeException(
-                    'The Create Intention response did not satisfy its prepared success contract.',
-                );
-            }
+            self::assertIntentionSuccessResponse(
+                $this->apiClient->lastHttpStatus(),
+                $response,
+                (int)$this->config->cardIntegrationId,
+                $reference,
+            );
             return [
                 'result' => 'PASS',
                 'scenario' => 'intention',
@@ -362,6 +359,19 @@ final class VerificationContext
         ];
 
         return ['result' => 'PASS', 'scenario' => 'wallet', 'service_results' => $results];
+    }
+
+    /** Enforce the prepared live success contract and expose it to the offline executable self-check. */
+    public static function assertIntentionSuccessResponse(
+        ?int $httpStatus,
+        mixed $response,
+        int $integrationId,
+        string $reference,
+    ): void {
+        if ($httpStatus !== 201
+            || !ProviderAttemptStageClassifier::validateIntentionResponse($response, $integrationId, $reference)) {
+            throw new RuntimeException('The Create Intention response did not satisfy its prepared success contract.');
+        }
     }
 
     private function syntheticOrderRequest(): CreateOrderCommand

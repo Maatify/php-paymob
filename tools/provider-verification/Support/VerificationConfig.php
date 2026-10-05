@@ -141,6 +141,25 @@ final readonly class VerificationConfig
         );
     }
 
+    /** Load only the Card integration ID needed to inspect retained Intention evidence offline. */
+    public static function loadIntentionRecovery(string $repositoryRoot): self
+    {
+        $root = realpath($repositoryRoot);
+        if ($root === false || !is_file($root . '/.env')) {
+            throw new RuntimeException('The repository-local .env file is required.');
+        }
+        $contents = file_get_contents($root . '/.env');
+        if (!is_string($contents)) {
+            throw new RuntimeException('The repository-local .env file could not be read.');
+        }
+        $values = Dotenv::parse($contents);
+        return new self(
+            $root, '', 'https://accept.paymob.com', '',
+            self::positiveInteger($values, 'PAYMOB_INTEGRATION_ID_CARD'),
+            null, null, null, null, null, null, null, 'intention', null,
+        );
+    }
+
     /** Build the package configuration while leaving unused integration IDs unselected. */
     public function packageConfig(): PaymobConfig
     {

@@ -64,7 +64,7 @@ final class SemanticSanitizer
     /** Return a sanitized value without changing its JSON type or container shape. */
     public function sanitize(mixed $value, string $key = '', string $path = '$'): mixed
     {
-        if ($this->isSensitiveKey($key)) {
+        if ($this->isSensitiveKey($key) || $this->isContextSensitiveKey($key, $path)) {
             return $this->redactSubtree($value, $key, $path);
         }
 
@@ -328,7 +328,7 @@ final class SemanticSanitizer
     private function collectSensitiveFieldDifferences(mixed $raw, mixed $safe, string $key, string $path): array
     {
         $differences = [];
-        if (($this->isSensitiveKey($key) || $this->isContextualPiiKey($key, $path)
+        if (($this->isSensitiveKey($key) || $this->isContextSensitiveKey($key, $path) || $this->isContextualPiiKey($key, $path)
                 || $this->isEmailKey($key) || $this->isPhoneKey($key))
             && $this->hasSensitiveScalarValue($raw)
             && !($this->isWalletTestPath($path) && $raw === $this->publicWalletTestMsisdn)
@@ -411,12 +411,12 @@ final class SemanticSanitizer
         return $summary;
     }
 
-    private function collectGlobalLeakGuardValues(mixed $value, string $key = ''): void
+    private function collectGlobalLeakGuardValues(mixed $value, string $key = '', string $path = '$'): void
     {
         if ($value instanceof stdClass) {
             foreach ($value as $childKey => $childValue) {
                 $name = (string)$childKey;
-                $this->collectGlobalLeakGuardValues($childValue, $name);
+                $this->collectGlobalLeakGuardValues($childValue, $name, $path . '.' . $name);
             }
 
             return;
@@ -425,14 +425,15 @@ final class SemanticSanitizer
         if (is_array($value)) {
             foreach ($value as $childKey => $childValue) {
                 $name = (string)$childKey;
-                $this->collectGlobalLeakGuardValues($childValue, $name);
+                $childPath = array_is_list($value) ? $path . '[' . $childKey . ']' : $path . '.' . $name;
+                $this->collectGlobalLeakGuardValues($childValue, $name, $childPath);
             }
 
             return;
         }
 
         if (is_string($value)) {
-            if ($this->isSensitiveKey($key)) {
+            if ($this->isSensitiveKey($key) || $this->isContextSensitiveKey($key, $path)) {
                 $this->rememberEmbeddedSensitiveValue($value);
             }
 
@@ -676,7 +677,7 @@ final class SemanticSanitizer
             return $safe === $expected;
         }
 
-        if ($this->isSensitiveKey($key)) {
+        if ($this->isSensitiveKey($key) || $this->isContextSensitiveKey($key, $path)) {
             $expected = is_string($raw) ? '<REDACTED_SECRET>' : $this->redactedNumber($raw);
             return $safe === $expected;
         }
@@ -715,6 +716,12 @@ final class SemanticSanitizer
             || $this->isIpKey($key);
     }
 
+    private function isContextSensitiveKey(string $key, string $path): bool
+    {
+        return strtolower($key) === 'key'
+            && preg_match('/(?:^|\.)payment_keys\[\d+\]\.key$/', $path) === 1;
+    }
+
     private function redactedNumber(int|float $value): int|float
     {
         if (is_float($value)) {
@@ -751,6 +758,10 @@ final class SemanticSanitizer
 
         if (!is_string($value)) {
             return false;
+        }
+
+        if ($this->isContextSensitiveKey($key, $path) && $value !== '' && $value !== '<REDACTED_SECRET>') {
+            return true;
         }
 
         if (preg_match_all('/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i', $value, $emails) > 0) {

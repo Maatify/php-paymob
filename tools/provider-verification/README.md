@@ -73,12 +73,16 @@ php tools/provider-verification/recover.php <absolute-run-directory> wallet
 php tools/provider-verification/recover.php <absolute-run-directory> kiosk
 php tools/provider-verification/recover.php <absolute-run-directory> payment-key card
 php tools/provider-verification/recover.php <absolute-run-directory> transaction-inquiry
+php tools/provider-verification/recover.php <absolute-run-directory> intention
 ```
 
-Offline recovery supports `wallet`, `kiosk`, Transaction Inquiry, and standalone Card Payment Key recovery with an
+Offline recovery supports `wallet`, `kiosk`, Intention, Transaction Inquiry, standalone Card Payment Key recovery with an
 explicit `card` method. It makes no provider request. It reads a source run in place, writes a sanitized recovery
 artifact, and does not delete or modify the retained raw run. Runtime-only metadata absent from raw files is reported
-as unavailable rather than inferred.
+as unavailable rather than inferred. Intention recovery accepts exactly one retained request to
+`https://accept.paymob.com/v1/intention/`, validates the synthetic request contract, and checks matching
+`special_reference` values when both are present. Since the raw triplet omits HTTP status and retained headers, it
+reports provider outcome and authorization-value verification as unavailable; it does not infer a 201 response.
 
 Reports preserve response field names, JSON shape, scalar types, nulls, and provider-semantic values. Known secrets, private PII, and account-specific identifiers are replaced with type-compatible placeholders; repeated IDs and references use stable mappings within a capture session. A leak guard fails closed if configured or detected sensitive values remain. Do not copy raw evidence into the repository, a fixture, a log, or a review comment.
 
