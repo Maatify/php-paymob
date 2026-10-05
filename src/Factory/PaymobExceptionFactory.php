@@ -37,13 +37,26 @@ final class PaymobExceptionFactory
         ?int $httpStatus = null,
         string $context = 'api'
     ): PaymobExceptionInterface {
-        $errorCode = (string)($resp['status']
-                              ?? $resp['error_code']
-                                 ?? $resp['code']
-                                    ?? '');
-        $message = $resp['detail']
-                   ?? $resp['message']
-                      ?? 'Unknown error from Paymob';
+        $errorCode = '';
+        foreach (['status', 'error_code', 'code'] as $field) {
+            $candidate = $resp[$field] ?? null;
+            if (is_string($candidate) && $candidate !== '') {
+                $errorCode = $candidate;
+                break;
+            }
+            if (is_int($candidate)) {
+                $errorCode = (string) $candidate;
+                break;
+            }
+        }
+
+        $message = 'Unknown error from Paymob';
+        foreach (['detail', 'message'] as $field) {
+            if (isset($resp[$field]) && is_string($resp[$field])) {
+                $message = $resp[$field];
+                break;
+            }
+        }
 
         // Normalize code maybe
         $normalized = strtolower($errorCode);

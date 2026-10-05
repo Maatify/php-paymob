@@ -53,6 +53,7 @@ use Maatify\Paymob\Transaction\DTO\TransactionResponseDTO;
 use Maatify\SharedCommon\Contracts\ClockInterface;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
+use ErrorException;
 
 final class RuntimeSecuritySystemTest extends TestCase
 {
@@ -575,6 +576,76 @@ final class RuntimeSecuritySystemTest extends TestCase
             self::fail('Expected rate-limit failure.');
         } catch (RateLimitException) {}
         self::assertCount(1, $api->postCalls, 'Retryable Maatify metadata must not enable generic Runtime retry.');
+    }
+
+    public function testMalformedProviderErrorMetadataFailsClosedWithoutDiagnostics(): void
+    {
+        $expected = [
+            400 => ApiException::class,
+            401 => UnauthorizedException::class,
+            404 => NotFoundException::class,
+            429 => RateLimitException::class,
+            500 => ServiceUnavailableException::class,
+        ];
+        foreach ($expected as $status => $exceptionClass) {
+            foreach ([[], (object)['nested' => 'value'], null, 7, false] as $invalidMessage) {
+                $response = [
+                    'status' => ['bad' => true],
+                    'error_code' => (object)['bad' => true],
+                    'code' => ['bad' => true],
+                    'detail' => $invalidMessage,
+                    'message' => $invalidMessage,
+                    'unrelated' => ['nested' => (object)['value' => 'preserved']],
+                ];
+                $json = json_encode($response, JSON_THROW_ON_ERROR);
+                set_error_handler(static function (int $severity, string $message): never {
+                    throw new ErrorException($message, 0, $severity);
+                });
+                try {
+                    try {
+                        ResponseDecoder::decode($status, $json);
+                        self::fail("Expected provider failure for HTTP {$status}.");
+                    } catch (PaymobExceptionInterface $exception) {
+                        self::assertSame($exceptionClass, $exception::class);
+                        self::assertSame($status, $exception->getProviderStatusCode());
+                        self::assertSame($status, $exception->getStatusCode());
+                        self::assertSame(json_decode($json, true, 512, JSON_THROW_ON_ERROR), $exception->getResponse());
+                        self::assertSame('Unknown error from Paymob', $exception->getMessage());
+                    }
+
+                    $directResponse = [
+                        'message' => (object)['bad' => true],
+                        'detail' => (object)['bad' => true],
+                        'status' => (object)['bad' => true],
+                        'error_code' => (object)['bad' => true],
+                        'code' => (object)['bad' => true],
+                    ];
+                    $direct = PaymobExceptionFactory::fromResponse($directResponse, $status);
+                    self::assertSame($exceptionClass, $direct::class);
+                    self::assertSame($directResponse, $direct->getResponse());
+                    self::assertSame('Unknown error from Paymob', $direct->getMessage());
+                } finally {
+                    restore_error_handler();
+                }
+            }
+        }
+    }
+
+    public function testProviderErrorFactoryRetainsValidBodyCodeAndMessageMappings(): void
+    {
+        $cases = [
+            [['error_code' => 'unauthorized', 'detail' => 'denied'], UnauthorizedException::class, 'denied'],
+            [['code' => 'validation_failed', 'message' => 'invalid'], ValidationException::class, 'invalid'],
+            [['status' => 'not_found', 'detail' => 'missing'], NotFoundException::class, 'missing'],
+            [['error_code' => 'duplicate_reference', 'detail' => 'duplicate'], DuplicateReferenceException::class, 'duplicate'],
+            [['error_code' => [], 'code' => 'validation_failed', 'message' => 'valid fallback'], ValidationException::class, 'valid fallback'],
+        ];
+        foreach ($cases as [$response, $expectedClass, $expectedMessage]) {
+            $exception = PaymobExceptionFactory::fromResponse($response, 400);
+            self::assertSame($expectedClass, $exception::class);
+            self::assertSame($expectedMessage, $exception->getMessage());
+            self::assertSame($response, $exception->getResponse());
+        }
     }
 
     public function testMySqlTokenHydrationValidatesStoredMixedValuesBeforeConversion(): void
