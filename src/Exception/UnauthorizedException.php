@@ -1,16 +1,20 @@
 <?php
-/**
- * Created by Maatify.dev
- * User: Maatify.dev
- * Date: 2025-09-16
- * Time: 17:09
- * Project: paymob-php
- * IDE: PhpStorm
- * https://www.Maatify.dev
- */
 
 declare(strict_types=1);
 
 namespace Maatify\Paymob\Exception;
 
-class UnauthorizedException extends ApiException {}
+use Maatify\Exceptions\Exception\Authentication\UnauthorizedMaatifyException;
+use Throwable;
+
+class UnauthorizedException extends UnauthorizedMaatifyException implements PaymobExceptionInterface
+{
+    use ProviderFailureContextTrait;
+
+    public function __construct(string $message, ?int $providerStatusCode = null, array|string|null $response = null, ?Throwable $previous = null)
+    {
+        $this->initializeProviderFailureContext($providerStatusCode, $response);
+        parent::__construct($message, previous: $previous,
+            httpStatusOverride: $providerStatusCode !== null && $providerStatusCode >= 400 && $providerStatusCode < 500 ? $providerStatusCode : null);
+    }
+}

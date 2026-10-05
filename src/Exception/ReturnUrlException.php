@@ -4,4 +4,21 @@ declare(strict_types=1);
 
 namespace Maatify\Paymob\Exception;
 
-final class ReturnUrlException extends PaymobException {}
+use Maatify\Exceptions\Contracts\ErrorCodeInterface;
+use Maatify\Exceptions\Enum\ErrorCodeEnum;
+use Maatify\Exceptions\Exception\Security\SecurityMaatifyException;
+use Throwable;
+
+final class ReturnUrlException extends SecurityMaatifyException implements PaymobExceptionInterface
+{
+    protected array|string|null $response;
+
+    public function __construct(string $message, int $code = 0, array|string|null $response = null, ?Throwable $previous = null, ?int $httpStatus = null)
+    {
+        $this->response = $response;
+        parent::__construct($message, $code, $previous, httpStatusOverride: $httpStatus === 403 ? 403 : null);
+    }
+
+    public function getResponse(): array|string|null { return $this->response; }
+    protected function defaultErrorCode(): ErrorCodeInterface { return ErrorCodeEnum::MAATIFY_ERROR; }
+}

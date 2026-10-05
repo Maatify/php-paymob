@@ -12,7 +12,7 @@ use Maatify\Paymob\Payment\ValueObject\BillingData;
 use Maatify\Paymob\Payment\Command\GeneratePaymentKeyCommand;
 use Maatify\Paymob\Authentication\DTO\TokenResponseDTO;
 use Maatify\Paymob\Authentication\ValueObject\TokenScope;
-use Maatify\Paymob\Exception\ApiException;
+use Maatify\Paymob\Exception\UnauthorizedException;
 use Maatify\Paymob\Adapter\ApiClientInterface;
 use Maatify\Paymob\Authentication\Repository\InMemoryTokenRepository;
 use Maatify\Paymob\Authentication\Service\AuthService;
@@ -793,7 +793,7 @@ JSON;
         {
             $this->getCalls[] = ['uri' => $uri, 'query' => $query, 'headers' => $headers];
             if ($this->rejectFirstGet && count($this->getCalls) === 1) {
-                throw new ApiException('Synthetic unauthorized response.', 401);
+                throw new UnauthorizedException('Synthetic unauthorized response.', 401);
             }
             return [
                 'id' => 42,

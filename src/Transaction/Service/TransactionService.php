@@ -7,7 +7,7 @@ namespace Maatify\Paymob\Transaction\Service;
 use InvalidArgumentException;
 use Maatify\Paymob\Adapter\ApiClientInterface;
 use Maatify\Paymob\Authentication\Service\AuthService;
-use Maatify\Paymob\Exception\ApiException;
+use Maatify\Paymob\Exception\UnauthorizedException;
 use Maatify\Paymob\Transaction\DTO\TransactionResponseDTO;
 
 final readonly class TransactionService
@@ -20,8 +20,7 @@ final readonly class TransactionService
         $uri = "/acceptance/transactions/{$id}";
         $token = $this->authService->getToken()->token;
         try { $response = $this->http->get($uri, headers: ['Authorization' => 'Bearer ' . $token]); }
-        catch (ApiException $e) {
-            if ($e->getProviderStatusCode() !== 401) throw $e;
+        catch (UnauthorizedException $e) {
             $fresh = $this->authService->getToken(forceRefresh: true)->token;
             $response = $this->http->get($uri, headers: ['Authorization' => 'Bearer ' . $fresh]);
         }

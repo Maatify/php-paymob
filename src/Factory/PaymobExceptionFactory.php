@@ -18,7 +18,7 @@ use Maatify\Paymob\Exception\AuthException;
 use Maatify\Paymob\Exception\DuplicateReferenceException;
 use Maatify\Paymob\Exception\NotFoundException;
 use Maatify\Paymob\Exception\OrderException;
-use Maatify\Paymob\Exception\PaymobException;
+use Maatify\Paymob\Exception\PaymobExceptionInterface;
 use Maatify\Paymob\Exception\RateLimitException;
 use Maatify\Paymob\Exception\ServiceUnavailableException;
 use Maatify\Paymob\Exception\TransactionException;
@@ -36,7 +36,7 @@ final class PaymobExceptionFactory
         array $resp,
         ?int $httpStatus = null,
         string $context = 'api'
-    ): PaymobException {
+    ): PaymobExceptionInterface {
         $errorCode = (string)($resp['status']
                               ?? $resp['error_code']
                                  ?? $resp['code']
@@ -49,40 +49,37 @@ final class PaymobExceptionFactory
         $normalized = strtolower($errorCode);
 
         return match (true) {
-            // Unauthorized / missing API key
-            $httpStatus === 401
-            || in_array($normalized, ['unauthorized', 'invalid_api_key', 'auth_failed']) =>
-            new UnauthorizedException($message, $httpStatus ?? 0, $resp),
+            // HTTP status semantics take precedence over contradictory provider body codes.
+            $httpStatus === 401 => new UnauthorizedException($message, $httpStatus, $resp),
+            $httpStatus === 404 => new NotFoundException($message, $httpStatus, $resp),
+            $httpStatus === 429 => new RateLimitException($message, $httpStatus, $resp),
+            $httpStatus !== null && $httpStatus >= 500 => new ServiceUnavailableException($message, $httpStatus, $resp),
+
+            // Provider body codes refine otherwise compatible responses.
+            in_array($normalized, ['unauthorized', 'invalid_api_key', 'auth_failed']) =>
+            new UnauthorizedException($message, $httpStatus, $resp),
 
             // Validation errors (bad params)
             in_array($normalized, ['validation_failed', 'invalid_params', 'missing_params']) =>
-            new ValidationException($message, $httpStatus ?? 0, $resp),
+            new ValidationException($message, $httpStatus, $resp),
 
             // Not found
             in_array($normalized, ['not_found', 'order_not_found', 'transaction_not_found']) =>
-            new NotFoundException($message, $httpStatus ?? 0, $resp),
+            new NotFoundException($message, $httpStatus, $resp),
 
             // Duplicate reference, such as an already-used integration ID or order ID.
             in_array($normalized, ['duplicate_reference', 'reference_exists']) =>
-            new DuplicateReferenceException($message, $httpStatus ?? 0, $resp),
-
-            // Rate limit / Too many requests
-            $httpStatus === 429 =>
-            new RateLimitException($message, $httpStatus ?? 0, $resp),
-
-            // Service unavailable / internal server error
-            $httpStatus >= 500 =>
-            new ServiceUnavailableException($message, $httpStatus ?? 0, $resp),
+            new DuplicateReferenceException($message, $httpStatus, $resp),
 
             // Use the exception type associated with the operation context.
             $context === 'auth' =>
-            new AuthException($message, $httpStatus ?? 0, $resp),
+            new AuthException($message, $httpStatus, $resp),
             $context === 'order' =>
-            new OrderException($message, $httpStatus ?? 0, $resp),
+            new OrderException($message, $httpStatus, $resp),
             $context === 'transaction' =>
-            new TransactionException($message, $httpStatus ?? 0, $resp),
+            new TransactionException($message, $httpStatus, $resp),
             default =>
-            new ApiException($message, $httpStatus ?? 0, $resp),
+            new ApiException($message, $httpStatus, $resp),
         };
     }
 }

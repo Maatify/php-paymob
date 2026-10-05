@@ -15,7 +15,8 @@ class ApiException extends PaymobException
     public function __construct(string $message, private readonly ?int $providerStatusCode = null,
         array|string|null $response = null, ?Throwable $previous = null)
     {
-        parent::__construct($message, 0, $response, $previous, $providerStatusCode);
+        parent::__construct($message, 0, $response, $previous,
+            $providerStatusCode !== null && $providerStatusCode >= 500 ? $providerStatusCode : null);
     }
 
     public function getProviderStatusCode(): ?int { return $this->providerStatusCode; }
@@ -23,5 +24,5 @@ class ApiException extends PaymobException
 
     protected function defaultErrorCode(): ErrorCodeInterface { return ErrorCodeEnum::MAATIFY_ERROR; }
     protected function defaultCategory(): ErrorCategoryInterface { return ErrorCategoryEnum::SYSTEM; }
-    protected function defaultHttpStatus(): int { return $this->providerStatusCode === null ? 500 : intdiv($this->providerStatusCode, 100) * 100; }
+    protected function defaultHttpStatus(): int { return 500; }
 }

@@ -4,14 +4,14 @@ declare(strict_types=1);
 
 namespace Maatify\Paymob\Exception;
 
-use Maatify\Exceptions\Exception\MaatifyException;
+use Maatify\Exceptions\Exception\System\SystemMaatifyException;
 use Maatify\Exceptions\Contracts\ErrorCategoryInterface;
 use Maatify\Exceptions\Contracts\ErrorCodeInterface;
 use Maatify\Exceptions\Enum\ErrorCategoryEnum;
 use Maatify\Exceptions\Enum\ErrorCodeEnum;
 use Throwable;
 
-class PaymobException extends MaatifyException implements PaymobExceptionInterface
+class PaymobException extends SystemMaatifyException implements PaymobExceptionInterface
 {
     public function __construct(string $message, int $code = 0, protected array|string|null $response = null, ?Throwable $previous = null, ?int $httpStatus = null)
     {

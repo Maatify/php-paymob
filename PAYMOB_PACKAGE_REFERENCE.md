@@ -212,7 +212,9 @@ Card/VPC Payment Key generation is supported using the configured Card integrati
 
 ## Exceptions
 
-All package exceptions implement `PaymobExceptionInterface` and use the `maatify/exceptions` base. Named provider classifications include Unauthorized, Validation, Not Found, Rate Limit, Service Unavailable, Auth, Order, Transaction, and Webhook failures. `TokenStorageException`, `OptionalCapabilityUnavailableException`, and `ReturnUrlException` represent their named package boundaries.
+All package exceptions implement `PaymobExceptionInterface` and use the matching stable `maatify/exceptions` family. Generic `PaymobException`, `ApiException`, `NetworkException`, `ServiceUnavailableException`, `OrderException`, and `TransactionException` use the System family. Named failures map to Authentication (`UnauthorizedException`, `AuthException`), Validation (`ValidationException`), Not Found (`NotFoundException`), Rate Limit (`RateLimitException`), Conflict (`DuplicateReferenceException`), Unsupported (`OptionalCapabilityUnavailableException`), and Security (`WebhookException`, `ReturnUrlException`).
+
+Provider response exceptions retain the exact provider status through `getProviderStatusCode()` / `getStatusCode()` and preserve decoded or raw response evidence through `getResponse()`. HTTP 401, 404, 429, and 5xx status classifications take precedence over contradictory body error codes. `RateLimitException` exposes retryable metadata from its Maatify family; Runtime services do not infer automatic retries from that metadata. Only the explicit typed 401 recovery path for Order, Payment Key, Kiosk Pay, and Transaction Inquiry retries once.
 
 ## DTO Diagnostic Snapshots and JSON
 

@@ -4,4 +4,6 @@ declare(strict_types=1);
 
 namespace Maatify\Paymob\Exception;
 
-final class OptionalCapabilityUnavailableException extends PaymobException {}
+use Maatify\Exceptions\Exception\Unsupported\UnsupportedOperationMaatifyException;
+
+final class OptionalCapabilityUnavailableException extends UnsupportedOperationMaatifyException implements PaymobExceptionInterface {}

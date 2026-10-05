@@ -21,11 +21,18 @@ use Maatify\Paymob\Config\PaymobConfig;
 use Maatify\Paymob\Exception\ApiException;
 use Maatify\Paymob\Exception\NetworkException;
 use Maatify\Paymob\Exception\NotFoundException;
+use Maatify\Paymob\Exception\DuplicateReferenceException;
+use Maatify\Paymob\Exception\AuthException;
+use Maatify\Paymob\Exception\PaymobExceptionInterface;
 use Maatify\Paymob\Exception\OptionalCapabilityUnavailableException;
 use Maatify\Paymob\Exception\RateLimitException;
 use Maatify\Paymob\Exception\ServiceUnavailableException;
 use Maatify\Paymob\Exception\TokenStorageException;
 use Maatify\Paymob\Exception\UnauthorizedException;
+use Maatify\Paymob\Exception\ValidationException;
+use Maatify\Paymob\Exception\WebhookException;
+use Maatify\Paymob\Exception\ReturnUrlException;
+use Maatify\Paymob\Factory\PaymobExceptionFactory;
 use Maatify\Paymob\Order\Command\CreateOrderCommand;
 use Maatify\Paymob\Order\DTO\OrderResponseDTO;
 use Maatify\Paymob\Order\Service\OrderService;
@@ -319,7 +326,7 @@ final class RuntimeSecuritySystemTest extends TestCase
         self::assertSame(['token' => 'x'], ResponseDecoder::decode(201, '{"token":"x"}'));
         foreach ([400, 401, 404, 429, 500] as $status) {
             try { ResponseDecoder::decode($status, '{"message":"no"}'); self::fail("Expected status {$status} failure."); }
-            catch (ApiException $e) {
+            catch (PaymobExceptionInterface $e) {
                 self::assertSame($status, $e->getProviderStatusCode());
                 self::assertNotSame($status, $e->getCode());
             }
@@ -347,12 +354,93 @@ final class RuntimeSecuritySystemTest extends TestCase
             try {
                 ResponseDecoder::decode($status, $body);
                 self::fail("Expected non-JSON provider failure for HTTP {$status}.");
-            } catch (ApiException $exception) {
+            } catch (PaymobExceptionInterface $exception) {
                 self::assertSame($expectedClass, $exception::class);
                 self::assertSame($status, $exception->getProviderStatusCode());
                 self::assertSame($body, $exception->getResponse());
             }
         }
+    }
+
+    public function testNamedExceptionsExposeStableMaatifySemanticsAndProviderEvidence(): void
+    {
+        $previous = new RuntimeException('prior provider failure');
+        $evidence = ['provider' => 'response'];
+        $cases = [
+            [new UnauthorizedException('unauthorized', 401, $evidence, $previous), 'AUTHENTICATION', 'UNAUTHORIZED', 401, true, false],
+            [new ValidationException('invalid', 422, $evidence, $previous), 'VALIDATION', 'INVALID_ARGUMENT', 422, true, false],
+            [new NotFoundException('missing', 404, $evidence, $previous), 'NOT_FOUND', 'RESOURCE_NOT_FOUND', 404, true, false],
+            [new RateLimitException('slow down', 429, $evidence, $previous), 'RATE_LIMIT', 'TOO_MANY_REQUESTS', 429, true, true],
+            [new DuplicateReferenceException('duplicate', 422, $evidence, $previous), 'CONFLICT', 'CONFLICT', 422, true, false],
+            [new AuthException('auth operation failed', 400, $evidence, $previous), 'AUTHENTICATION', 'AUTH_STATE_VIOLATION', 400, true, false],
+        ];
+        foreach ($cases as [$exception, $category, $errorCode, $httpStatus, $safe, $retryable]) {
+            self::assertInstanceOf(PaymobExceptionInterface::class, $exception);
+            self::assertSame($category, $exception->getCategory()->getValue());
+            self::assertSame($errorCode, $exception->getErrorCode()->getValue());
+            self::assertSame($httpStatus, $exception->getHttpStatus());
+            self::assertSame($safe, $exception->isSafe());
+            self::assertSame($retryable, $exception->isRetryable());
+            self::assertSame($httpStatus, $exception->getProviderStatusCode());
+            self::assertSame($httpStatus, $exception->getStatusCode());
+            self::assertSame($evidence, $exception->getResponse());
+            self::assertSame($previous, $exception->getPrevious());
+        }
+
+        $optional = new OptionalCapabilityUnavailableException('optional capability unavailable');
+        self::assertSame('UNSUPPORTED', $optional->getCategory()->getValue());
+        self::assertSame('UNSUPPORTED_OPERATION', $optional->getErrorCode()->getValue());
+        self::assertSame(409, $optional->getHttpStatus());
+        self::assertTrue($optional->isSafe());
+        self::assertFalse($optional->isRetryable());
+
+        foreach ([new WebhookException('invalid webhook'), new ReturnUrlException('invalid return URL')] as $securityException) {
+            self::assertInstanceOf(PaymobExceptionInterface::class, $securityException);
+            self::assertSame('SECURITY', $securityException->getCategory()->getValue());
+            self::assertSame('MAATIFY_ERROR', $securityException->getErrorCode()->getValue());
+            self::assertSame(403, $securityException->getHttpStatus());
+            self::assertTrue($securityException->isSafe());
+        }
+
+        foreach ([
+            UnauthorizedException::class, ValidationException::class, NotFoundException::class,
+            RateLimitException::class, DuplicateReferenceException::class, AuthException::class,
+            ApiException::class, NetworkException::class, TokenStorageException::class,
+            OptionalCapabilityUnavailableException::class, WebhookException::class, ReturnUrlException::class,
+            ServiceUnavailableException::class, \Maatify\Paymob\Exception\OrderException::class,
+            \Maatify\Paymob\Exception\TransactionException::class,
+            \Maatify\Paymob\Exception\InvalidRequestException::class,
+        ] as $exceptionClass) {
+            self::assertTrue(is_subclass_of($exceptionClass, PaymobExceptionInterface::class), $exceptionClass);
+        }
+        self::assertSame('SYSTEM', (new \Maatify\Paymob\Exception\PaymobException('system'))->getCategory()->getValue());
+        self::assertSame('MAATIFY_ERROR', (new \Maatify\Paymob\Exception\PaymobException('system'))->getErrorCode()->getValue());
+    }
+
+    public function testExceptionFactoryStatusPrecedenceAndRateLimitDoesNotRetry(): void
+    {
+        $factoryCases = [
+            [401, 'validation_failed', UnauthorizedException::class],
+            [404, 'duplicate_reference', NotFoundException::class],
+            [429, 'validation_failed', RateLimitException::class],
+            [500, 'validation_failed', ServiceUnavailableException::class],
+            [400, 'duplicate_reference', DuplicateReferenceException::class],
+        ];
+        foreach ($factoryCases as [$status, $bodyCode, $expected]) {
+            $exception = PaymobExceptionFactory::fromResponse(['error_code' => $bodyCode], $status);
+            self::assertSame($expected, $exception::class);
+            self::assertSame($status, $exception->getProviderStatusCode());
+        }
+
+        $config = new PaymobConfig('key', 'hmac', 1, 2, 3);
+        $api = new QueueApiClient();
+        $api->postQueue = [new RateLimitException('slow down', 429)];
+        $service = new OrderService($api, new AuthService($api, $config, $this->repoWithCachedToken($config), new FixedTestClock(1000)));
+        try {
+            $service->createOrder(new CreateOrderCommand(100, CurrencyEnum::EGP, 'order', []));
+            self::fail('Expected rate-limit failure.');
+        } catch (RateLimitException) {}
+        self::assertCount(1, $api->postCalls, 'Retryable Maatify metadata must not enable generic Runtime retry.');
     }
 
     public function testMySqlTokenHydrationValidatesStoredMixedValuesBeforeConversion(): void
