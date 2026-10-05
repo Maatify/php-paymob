@@ -921,8 +921,9 @@ JSON;
         }
     };
     $transactionTokenRepository = new InMemoryTokenRepository();
+    $transactionTokenIssuedAt = time();
     $transactionTokenRepository->save(TokenScope::fromConfig($transactionConfig->packageConfig()), new TokenResponseDTO(
-        'synthetic-initial-auth-token', 77, time(), time() + 3600,
+        'synthetic-initial-auth-token', 77, $transactionTokenIssuedAt, $transactionTokenIssuedAt + 3600,
     ));
     $transactionService = new TransactionService(
         $transactionHttp,
