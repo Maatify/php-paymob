@@ -13,6 +13,8 @@ declare(strict_types=1);
 
 namespace Maatify\Paymob\Callback\DTO;
 
+use Maatify\Paymob\Exception\WebhookException;
+
 final readonly class WebhookPayloadDTO implements \JsonSerializable
 {
     public function __construct(
@@ -31,18 +33,41 @@ final readonly class WebhookPayloadDTO implements \JsonSerializable
 
     public static function fromArray(array $data): self
     {
-        $obj = $data['obj'] ?? [];
+        $obj = $data['obj'] ?? null;
+        if (!is_array($obj) || !isset($obj['order']) || !is_array($obj['order'])
+            || !isset($obj['source_data']) || !is_array($obj['source_data'])) {
+            throw new WebhookException('Malformed typed webhook payload');
+        }
+        foreach (['id', 'amount_cents'] as $field) {
+            if (!isset($obj[$field]) || !is_int($obj[$field]) || $obj[$field] <= 0) {
+                throw new WebhookException("Invalid typed webhook field: {$field}");
+            }
+        }
+        if (!isset($obj['order']['id']) || !is_int($obj['order']['id']) || $obj['order']['id'] <= 0
+            || !isset($obj['currency']) || !is_string($obj['currency']) || $obj['currency'] === '') {
+            throw new WebhookException('Invalid typed webhook order or currency');
+        }
+        foreach (['success', 'pending'] as $field) {
+            if (!array_key_exists($field, $obj) || !is_bool($obj[$field])) {
+                throw new WebhookException("Invalid typed webhook field: {$field}");
+            }
+        }
+        foreach (['type', 'sub_type', 'pan'] as $field) {
+            if (!isset($obj['source_data'][$field]) || !is_string($obj['source_data'][$field])) {
+                throw new WebhookException("Invalid typed webhook source_data field: {$field}");
+            }
+        }
 
         return new self(
-            transactionId: (int)($obj['id'] ?? 0),
-            orderId      : (int)($obj['order']['id'] ?? 0),
-            amountCents  : (int)($obj['amount_cents'] ?? 0),
-            currency     : $obj['currency'] ?? 'EGP',
-            success      : (bool)($obj['success'] ?? false),
-            pending      : (bool)($obj['pending'] ?? false),
-            paymentMethod: $obj['source_data']['type'] ?? null,
-            subType      : $obj['source_data']['sub_type'] ?? null,
-            maskedPan    : $obj['source_data']['pan'] ?? null,
+            transactionId: $obj['id'],
+            orderId      : $obj['order']['id'],
+            amountCents  : $obj['amount_cents'],
+            currency     : $obj['currency'],
+            success      : $obj['success'],
+            pending      : $obj['pending'],
+            paymentMethod: $obj['source_data']['type'],
+            subType      : $obj['source_data']['sub_type'],
+            maskedPan    : $obj['source_data']['pan'],
             hmac         : $data['hmac'] ?? null,
             raw          : $data
         );

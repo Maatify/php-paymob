@@ -61,7 +61,38 @@ final readonly class WebhookValidator
             throw new WebhookException('Invalid HMAC signature');
         }
 
+        $this->validateTypedFields($payload['obj']);
+
         return WebhookPayloadDTO::fromArray($payload);
+    }
+
+    private function validateTypedFields(array $obj): void
+    {
+        foreach (['id', 'amount_cents'] as $field) {
+            if (!isset($obj[$field]) || !is_int($obj[$field]) || $obj[$field] <= 0) {
+                throw new WebhookException("Invalid typed webhook field: {$field}");
+            }
+        }
+        if (!isset($obj['order']) || !is_array($obj['order']) || !isset($obj['order']['id'])
+            || !is_int($obj['order']['id']) || $obj['order']['id'] <= 0) {
+            throw new WebhookException('Invalid typed webhook field: order.id');
+        }
+        if (!isset($obj['currency']) || !is_string($obj['currency']) || $obj['currency'] === '') {
+            throw new WebhookException('Invalid typed webhook field: currency');
+        }
+        foreach (['success', 'pending'] as $field) {
+            if (!array_key_exists($field, $obj) || !is_bool($obj[$field])) {
+                throw new WebhookException("Invalid typed webhook field: {$field}");
+            }
+        }
+        if (!isset($obj['source_data']) || !is_array($obj['source_data'])) {
+            throw new WebhookException('Invalid typed webhook field: source_data');
+        }
+        foreach (['type', 'sub_type', 'pan'] as $field) {
+            if (!isset($obj['source_data'][$field]) || !is_string($obj['source_data'][$field])) {
+                throw new WebhookException("Invalid typed webhook field: source_data.{$field}");
+            }
+        }
     }
 
     /**

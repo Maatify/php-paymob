@@ -104,6 +104,41 @@ final class WebhookValidatorSystemTest extends TestCase
         $this->assertRejected($payload);
     }
 
+    public function testCorrectlySignedTypedFieldViolationsAreRejected(): void
+    {
+        foreach ([
+            static function (array &$obj): void { $obj['success'] = 'false'; },
+            static function (array &$obj): void { $obj['pending'] = 'false'; },
+            static function (array &$obj): void { $obj['currency'] = ''; },
+            static function (array &$obj): void { $obj['source_data']['type'] = false; },
+        ] as $mutate) {
+            $payload = $this->validPayload();
+            $mutate($payload['obj']);
+            $payload['hmac'] = $this->signObject($payload['obj']);
+            try {
+                $this->validator()->validate($payload);
+                self::fail('Signed malformed typed webhook value must be rejected.');
+            } catch (WebhookException) {
+                self::assertTrue(true);
+            }
+        }
+    }
+
+    private function signObject(array $obj): string
+    {
+        $paths = ['amount_cents', 'created_at', 'currency', 'error_occured', 'has_parent_transaction', 'id',
+            'integration_id', 'is_3d_secure', 'is_auth', 'is_capture', 'is_refunded', 'is_standalone_payment',
+            'is_voided', 'order.id', 'owner', 'pending', 'source_data.pan', 'source_data.sub_type',
+            'source_data.type', 'success'];
+        $canonical = '';
+        foreach ($paths as $path) {
+            $value = $obj;
+            foreach (explode('.', $path) as $part) $value = $value[$part];
+            $canonical .= is_bool($value) ? ($value ? 'true' : 'false') : (string)$value;
+        }
+        return hash_hmac('sha512', $canonical, self::HMAC_SECRET);
+    }
+
     public function testNonTransactionCallbackIsRejected(): void
     {
         $payload = $this->validPayload();

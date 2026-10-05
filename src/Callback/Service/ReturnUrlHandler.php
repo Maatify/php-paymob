@@ -75,21 +75,38 @@ final readonly class ReturnUrlHandler
             throw new ReturnUrlException('Invalid HMAC signature for return URL');
         }
 
+        $transactionId = $this->positiveCanonicalInteger($query['id'], 'id');
+        $orderId = $this->positiveCanonicalInteger($canonicalOrder, 'order');
+        $amountCents = $this->positiveCanonicalInteger($query['amount_cents'], 'amount_cents');
+
         $message = $query['data_message'] ?? null;
         if ($message !== null && !is_string($message)) {
             throw new ReturnUrlException('Invalid data_message query value for return URL');
         }
 
         return new ReturnUrlResponseDTO(
-            transactionId: (int) $query['id'],
-            orderId: (int) $canonicalOrder,
-            amountCents: (int) $query['amount_cents'],
+            transactionId: $transactionId,
+            orderId: $orderId,
+            amountCents: $amountCents,
             currency: $query['currency'],
             success: $query['success'] === 'true',
             pending: $query['pending'] === 'true',
             message: $message,
             hmac: $providedHmac,
         );
+    }
+
+    private function positiveCanonicalInteger(string $value, string $field): int
+    {
+        if (preg_match('/^[1-9][0-9]*$/D', $value) !== 1) {
+            throw new ReturnUrlException("Invalid canonical positive integer for {$field}");
+        }
+        $parsed = filter_var($value, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+        if (!is_int($parsed)) {
+            throw new ReturnUrlException("Out-of-range canonical integer for {$field}");
+        }
+
+        return $parsed;
     }
 
     /**
