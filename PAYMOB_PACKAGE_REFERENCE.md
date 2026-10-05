@@ -40,8 +40,9 @@ Maatify\Paymob\Adapter\ApiClient
 Maatify\Paymob\Adapter\CurlApiClient
 Maatify\Paymob\Adapter\GuzzleApiClient
 Maatify\Paymob\Enum\CurrencyEnum
-Maatify\Paymob\Exception\PaymobExceptionInterface
-Maatify\Paymob\Exception\PaymobException and named subclasses
+Maatify\Paymob\Exception\PaymobExceptionInterface (common package exception marker)
+Maatify\Paymob\Exception\PaymobException (generic System-family base)
+Specialized named package exceptions (may extend the appropriate stable maatify/exceptions family directly)
 Maatify\Paymob\Facade\PaymobFacade
 
 Maatify\Paymob\Authentication\DTO\TokenResponseDTO
@@ -168,7 +169,7 @@ Every operation is scope-local. A consumer-supplied implementation does not requ
 
 ## Provider/API Failure Semantics
 
-Every HTTP status `>= 400`, including 400, is a provider/API failure represented by `ApiException` or a named subclass. `getProviderStatusCode()` returns the provider status independently of the PHP exception code. `getResponse()` retains a decoded array or raw string body. Response bodies are not automatically logged.
+Every HTTP status `>= 400`, including 400, is a provider/API failure represented by `ApiException` or another named package exception selected by its semantic classification. Specialized named exceptions may extend the appropriate stable `maatify/exceptions` family directly; they are not required to inherit from `ApiException`. `getProviderStatusCode()` returns the provider status independently of the PHP exception code. `getResponse()` retains a decoded array or raw string body. Response bodies are not automatically logged.
 
 ## Transport/Network Failure Semantics
 

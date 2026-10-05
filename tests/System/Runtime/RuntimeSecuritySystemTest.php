@@ -22,6 +22,7 @@ use Maatify\Paymob\Exception\ApiException;
 use Maatify\Paymob\Exception\NetworkException;
 use Maatify\Paymob\Exception\NotFoundException;
 use Maatify\Paymob\Exception\DuplicateReferenceException;
+use Maatify\Paymob\Exception\InvalidRequestException;
 use Maatify\Paymob\Exception\AuthException;
 use Maatify\Paymob\Exception\PaymobExceptionInterface;
 use Maatify\Paymob\Exception\OptionalCapabilityUnavailableException;
@@ -467,6 +468,26 @@ final class RuntimeSecuritySystemTest extends TestCase
         }
         self::assertSame('SYSTEM', (new \Maatify\Paymob\Exception\PaymobException('system'))->getCategory()->getValue());
         self::assertSame('MAATIFY_ERROR', (new \Maatify\Paymob\Exception\PaymobException('system'))->getErrorCode()->getValue());
+    }
+
+    public function testInvalidRequestExceptionUsesValidationSemanticsAndPreservesProviderContext(): void
+    {
+        $default = new InvalidRequestException('invalid request');
+        self::assertInstanceOf(PaymobExceptionInterface::class, $default);
+        self::assertSame('VALIDATION', $default->getCategory()->getValue());
+        self::assertSame('INVALID_ARGUMENT', $default->getErrorCode()->getValue());
+        self::assertSame(400, $default->getHttpStatus());
+        self::assertTrue($default->isSafe());
+        self::assertFalse($default->isRetryable());
+
+        $response = ['error_code' => 'invalid_params', 'detail' => 'Invalid request'];
+        $previous = new RuntimeException('provider context');
+        $withProviderContext = new InvalidRequestException('invalid request', 422, $response, $previous);
+        self::assertSame(422, $withProviderContext->getProviderStatusCode());
+        self::assertSame(422, $withProviderContext->getStatusCode());
+        self::assertSame(422, $withProviderContext->getHttpStatus());
+        self::assertSame($response, $withProviderContext->getResponse());
+        self::assertSame($previous, $withProviderContext->getPrevious());
     }
 
     public function testExceptionFactoryStatusPrecedenceAndRateLimitDoesNotRetry(): void
