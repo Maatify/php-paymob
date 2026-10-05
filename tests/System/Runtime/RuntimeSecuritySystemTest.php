@@ -982,6 +982,46 @@ final class RuntimeSecuritySystemTest extends TestCase
         self::assertCount(1, $transactionApi->postCalls);
     }
 
+    public function testNon401AndNullStatusUnauthorizedExceptionsPropagateUnchangedForEveryRecoveryService(): void
+    {
+        $config = new PaymobConfig('key', 'hmac', 1, 2, 3);
+        $billing = new BillingData('First', 'Last', 'a@example.com', '01000000000');
+
+        foreach ([400, null] as $status) {
+            foreach (['order', 'payment-key', 'kiosk', 'transaction'] as $operation) {
+                $exception = new UnauthorizedException('Body-code unauthorized', $status, ['error_code' => 'unauthorized']);
+                $api = new QueueApiClient();
+                if ($operation === 'transaction') {
+                    $api->getQueue = [$exception];
+                } else {
+                    $api->postQueue = [$exception];
+                }
+                $repository = $this->repoWithCachedToken($config);
+                $auth = new AuthService($api, $config, $repository, new FixedTestClock(1000));
+
+                try {
+                    match ($operation) {
+                        'order' => (new OrderService($api, $auth))->createOrder(new CreateOrderCommand(100, CurrencyEnum::EGP)),
+                        'payment-key' => (new PaymentKeyService($api, $auth))->generate(
+                            new GeneratePaymentKeyCommand(10, 1, 100, CurrencyEnum::EGP, $billing),
+                        ),
+                        'kiosk' => (new KioskPaymentService($api, $auth))->pay(new InitiateKioskPaymentCommand('payment-key')),
+                        'transaction' => (new \Maatify\Paymob\Transaction\Service\TransactionService($api, $auth))->getTransaction(10),
+                    };
+                    self::fail('Non-401 UnauthorizedException must propagate.');
+                } catch (UnauthorizedException $caught) {
+                    self::assertSame($exception, $caught);
+                    self::assertSame($status, $caught->getProviderStatusCode());
+                    self::assertSame(['error_code' => 'unauthorized'], $caught->getResponse());
+                }
+
+                self::assertCount($operation === 'transaction' ? 0 : 1, $api->postCalls);
+                self::assertCount($operation === 'transaction' ? 1 : 0, $api->getCalls);
+                self::assertSame('cached', $repository->get(TokenScope::fromConfig($config))?->token);
+            }
+        }
+    }
+
     private function repoWithCachedToken(PaymobConfig $config): InMemoryTokenRepository
     {
         $repo = new InMemoryTokenRepository();

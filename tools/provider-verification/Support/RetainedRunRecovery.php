@@ -19,6 +19,8 @@ final class RetainedRunRecovery
 
     private ?SemanticSanitizer $sanitizer = null;
 
+    private bool $recoveryProofUnavailable = false;
+
     /** @var list<array<string, mixed>> */
     private array $rawArtifacts = [];
 
@@ -129,7 +131,34 @@ final class RetainedRunRecovery
                 throw new RuntimeException('A retained request URL is empty or invalid.');
             }
 
-            $stage = $attemptStageClassifier->classify($urlBytes, $request);
+            try {
+                $stage = $attemptStageClassifier->classify($urlBytes, $request);
+            } catch (RuntimeException $exception) {
+                $path = parse_url($urlBytes, PHP_URL_PATH);
+                $repeatedOperation = is_string($path) && $path === '/api/auth/tokens'
+                    && $decoded !== []
+                    && $decoded[array_key_last($decoded)]['stage'] !== 'auth';
+                if (is_string($path) && $path !== '/api/auth/tokens') {
+                    foreach ($decoded as $previousEntry) {
+                        if (parse_url($previousEntry['raw_url'], PHP_URL_PATH) === $path) {
+                            $repeatedOperation = true;
+                            break;
+                        }
+                    }
+                }
+                if ($repeatedOperation
+                    && $exception->getMessage() === 'A provider attempt is not the next legal workflow transition.') {
+                    $this->recoveryProofUnavailable = true;
+                    $this->stage = 'recovery-proof-unavailable';
+                    throw new RuntimeException(
+                        'HTTP status evidence is unavailable to prove a retained retry transition.',
+                        0,
+                        $exception,
+                    );
+                }
+                throw $exception;
+            }
+            $attemptStageClassifier->recordRetainedOutcome($stage);
             if ($scenario === 'transaction-inquiry' && str_starts_with($stage, 'transaction-inquiry')
                 && !$emptyTransactionGet) {
                 throw new RuntimeException('A retained Transaction Inquiry GET must have an empty request body.');
@@ -434,6 +463,7 @@ final class RetainedRunRecovery
             'raw_storage_directory' => $this->sourceDirectory,
             'raw_artifacts' => $this->rawArtifacts,
             'captured_attempts' => $this->safeAttempts,
+            'recovery_proof' => $this->recoveryProofUnavailable ? 'unavailable_without_http_status' : null,
         ];
         $sanitizer = $this->sanitizer;
         if ($sanitizer !== null && $sanitizer->containsSensitiveValues($diagnostic)) {
@@ -463,6 +493,7 @@ final class RetainedRunRecovery
                     static fn(array $attempt): string => $attempt['stage'],
                     $this->safeAttempts,
                 )),
+                'recovery_proof' => $this->recoveryProofUnavailable ? 'unavailable_without_http_status' : null,
                 'failure_artifact' => $artifact,
                 'source_raw_retained' => $this->sourceDirectory !== null && is_dir($this->sourceDirectory),
             ];
@@ -474,6 +505,7 @@ final class RetainedRunRecovery
                 'source_directory' => $this->sourceDirectory,
                 'exchange_count' => count($this->filesBySequence),
                 'recovered_stages' => [],
+                'recovery_proof' => $this->recoveryProofUnavailable ? 'unavailable_without_http_status' : null,
                 'failure_artifact' => null,
                 'source_raw_retained' => $this->sourceDirectory !== null && is_dir($this->sourceDirectory),
             ];

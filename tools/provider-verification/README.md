@@ -16,7 +16,7 @@ Requirements:
 - All configured integration IDs are positive: `PAYMOB_INTEGRATION_ID_CARD`, `PAYMOB_INTEGRATION_ID_KIOSK`, and `PAYMOB_INTEGRATION_ID_WALLET`.
 - The package configuration requires a non-empty `PAYMOB_HMAC_SECRET` for every flow.
 - Wallet flow only: `PAYMOB_TEST_WALLET_MSISDN=01010101010`, the approved public test input.
-- Transaction Inquiry only: `PAYMOB_TEST_TRANSACTION_ID`, a positive existing Transaction ID supplied locally. No integration ID or Wallet MSISDN is needed.
+- Transaction Inquiry additionally requires `PAYMOB_TEST_TRANSACTION_ID`, a positive existing Transaction ID supplied locally. All flows still load all three integration IDs because the current package configuration contract requires them. Transaction Inquiry does not use an integration ID to create its request and does not require `PAYMOB_TEST_WALLET_MSISDN`.
 
 Run one flow at a time from the repository root:
 

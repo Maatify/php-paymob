@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Maatify\Paymob\ProviderVerification\Support;
 
 use JsonException;
-use Maatify\Paymob\Exception\ApiException;
+use Maatify\Paymob\Adapter\ResponseDecoder;
 use Maatify\Paymob\Exception\NetworkException;
 use Maatify\Paymob\Adapter\ApiClientInterface;
 use RuntimeException;
@@ -34,6 +34,18 @@ final class CapturingApiClient implements ApiClientInterface
     public function classifyAttemptStage(string $url, mixed $requestShape): string
     {
         return $this->attemptStageClassifier->classify($url, $requestShape);
+    }
+
+    /** Record a deterministic synthetic outcome through the same live classification seam. */
+    public function recordClassifiedOutcome(string $stage, bool $transportOk, ?int $httpStatus): void
+    {
+        $this->attemptStageClassifier->recordOutcome($stage, $transportOk, $httpStatus);
+    }
+
+    /** Reuse the production response decoder at the captured response boundary. */
+    public static function classifyCapturedResponse(int $httpStatus, string $responseBody): array
+    {
+        return ResponseDecoder::decode($httpStatus, $responseBody);
     }
 
     /**
@@ -100,22 +112,29 @@ final class CapturingApiClient implements ApiClientInterface
         $stage = $this->classifyAttemptStage($url, $requestShape);
         $curl = curl_init($url);
         if ($curl === false) {
+            $this->attemptStageClassifier->recordOutcome($stage, false, null);
             throw new NetworkException('Could not initialize the provider verification transport.');
         }
 
         $responseBody = '';
         $responseHeaderNames = [];
         $headerLines = $this->formatHeaders($headers);
-        self::configureTransportHandle(
-            $curl,
-            $method,
-            $headerLines,
-            $requestBody,
-            $this->connectTimeoutSeconds,
-            $this->timeoutSeconds,
-            $responseBody,
-            $responseHeaderNames,
-        );
+        try {
+            self::configureTransportHandle(
+                $curl,
+                $method,
+                $headerLines,
+                $requestBody,
+                $this->connectTimeoutSeconds,
+                $this->timeoutSeconds,
+                $responseBody,
+                $responseHeaderNames,
+            );
+        } catch (Throwable $exception) {
+            unset($curl);
+            $this->attemptStageClassifier->recordOutcome($stage, false, null);
+            throw $exception;
+        }
 
         $executionResult = curl_exec($curl);
         $curlErrno = curl_errno($curl);
@@ -152,17 +171,14 @@ final class CapturingApiClient implements ApiClientInterface
             $requestJsonValid = json_last_error() === JSON_ERROR_NONE;
         }
 
-        $decodedResponse = null;
         $responseObject = null;
         $responseJsonValid = false;
         try {
-            $decodedResponse = json_decode($responseBody, true, 512, JSON_THROW_ON_ERROR);
             $responseObject = json_decode($responseBody, false, 512, JSON_THROW_ON_ERROR);
             $responseJsonValid = true;
         } catch (JsonException) {
             $responseJsonValid = false;
         }
-        $responseValidForPackage = $responseJsonValid && is_array($decodedResponse);
         $responseTopLevelKeys = $responseObject instanceof stdClass ? array_keys(get_object_vars($responseObject)) : [];
         $responseTopLevelTypes = $responseObject instanceof stdClass
             ? $this->topLevelTypes($responseObject)
@@ -183,25 +199,12 @@ final class CapturingApiClient implements ApiClientInterface
         ]);
 
         if (!$transportOk) {
+            $this->attemptStageClassifier->recordOutcome($stage, false, null);
             throw new NetworkException('Provider verification transport failed.', $curlErrno);
         }
 
-        if ($httpStatus >= 400) {
-            throw new ApiException(
-                'Provider returned an HTTP error status.',
-                $httpStatus,
-                $responseValidForPackage ? $decodedResponse : null,
-            );
-        }
-
-        if (!$responseJsonValid) {
-            throw new RuntimeException('Provider response was not valid JSON.');
-        }
-        if (!$responseValidForPackage) {
-            throw new RuntimeException('Provider response JSON was not an object or array.');
-        }
-
-        return $decodedResponse;
+        $this->attemptStageClassifier->recordOutcome($stage, true, $httpStatus);
+        return self::classifyCapturedResponse($httpStatus, $responseBody);
     }
 
     /**

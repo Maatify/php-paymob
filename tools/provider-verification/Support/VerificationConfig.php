@@ -81,11 +81,8 @@ final readonly class VerificationConfig
         }
 
         if ($scenario === 'transaction-inquiry') {
-            $value = self::required($values, 'PAYMOB_TEST_TRANSACTION_ID');
-            if (!ctype_digit($value) || $value[0] === '0' || (string)(int)$value !== $value) {
-                throw new RuntimeException('The transaction inquiry input must be a positive integer.');
-            }
-            $testTransactionId = (int)$value;
+            $value = $values['PAYMOB_TEST_TRANSACTION_ID'] ?? null;
+            $testTransactionId = self::canonicalPositiveInteger($value, 'The transaction inquiry input must be a positive integer.');
         }
 
         return new self(
@@ -136,9 +133,22 @@ final readonly class VerificationConfig
     /** @param array<string, string> $values */
     private static function positiveInteger(array $values, string $key): int
     {
-        $value = self::required($values, $key);
-        if (!ctype_digit($value) || (int)$value < 1) {
-            throw new RuntimeException('A required integration ID is not a positive integer.');
+        return self::canonicalPositiveInteger(
+            $values[$key] ?? null,
+            'A required integration ID is not a positive integer.',
+        );
+    }
+
+    private static function canonicalPositiveInteger(mixed $value, string $message): int
+    {
+        if (!is_string($value) || preg_match('/^[1-9][0-9]*$/D', $value) !== 1) {
+            throw new RuntimeException($message);
+        }
+
+        $maximum = (string)PHP_INT_MAX;
+        if (strlen($value) > strlen($maximum)
+            || (strlen($value) === strlen($maximum) && strcmp($value, $maximum) > 0)) {
+            throw new RuntimeException($message);
         }
 
         return (int)$value;

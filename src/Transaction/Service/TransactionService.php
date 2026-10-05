@@ -21,6 +21,7 @@ final readonly class TransactionService
         $token = $this->authService->getToken()->token;
         try { $response = $this->http->get($uri, headers: ['Authorization' => 'Bearer ' . $token]); }
         catch (UnauthorizedException $e) {
+            if ($e->getProviderStatusCode() !== 401) throw $e;
             $fresh = $this->authService->getToken(forceRefresh: true)->token;
             $response = $this->http->get($uri, headers: ['Authorization' => 'Bearer ' . $fresh]);
         }

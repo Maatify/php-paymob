@@ -22,6 +22,7 @@ final readonly class PaymentKeyService
         $payload = ['auth_token' => $token, ...$command->toArray()];
         try { $response = $this->http->post($uri, $payload); }
         catch (UnauthorizedException $e) {
+            if ($e->getProviderStatusCode() !== 401) throw $e;
             $fresh = $this->authService->getToken(forceRefresh: true)->token;
             $payload = ['auth_token' => $fresh, ...$command->toArray()];
             $response = $this->http->post($uri, $payload);
