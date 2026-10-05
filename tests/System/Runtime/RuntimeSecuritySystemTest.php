@@ -71,6 +71,22 @@ final class RuntimeSecuritySystemTest extends TestCase
         catch (\InvalidArgumentException) {}
     }
 
+    public function testAuthServiceRejectsObjectProfileWithPackageApiExceptionEvidence(): void
+    {
+        $config = new PaymobConfig('key', 'hmac', 1, 2, 3);
+        $response = ['token' => 'provider-token', 'profile' => (object)['id' => 7]];
+        $api = new QueueApiClient();
+        $api->postQueue = [$response];
+        $auth = new AuthService($api, $config, new InMemoryTokenRepository(), new FixedTestClock(1000));
+
+        try {
+            $auth->getToken();
+            self::fail('Malformed Auth profile shape must throw package ApiException.');
+        } catch (ApiException $exception) {
+            self::assertSame($response, $exception->getResponse());
+        }
+    }
+
     public function testTokenScopeIsOpaqueDeterministicAndCredentialSpecific(): void
     {
         $first = new PaymobConfig('secret-key', 'hmac', 1, 2, 3);

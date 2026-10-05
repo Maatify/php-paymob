@@ -32,13 +32,14 @@ final readonly class AuthService
         }
 
         $response = $this->http->post('/auth/tokens', ['api_key' => $this->config->apiKey]);
-        if (!isset($response['token'], $response['profile']['id']) || !is_string($response['token']) || $response['token'] === ''
-            || !is_int($response['profile']['id']) || $response['profile']['id'] <= 0) {
+        $profile = $response['profile'] ?? null;
+        if (!isset($response['token']) || !is_string($response['token']) || $response['token'] === ''
+            || !is_array($profile) || !isset($profile['id']) || !is_int($profile['id']) || $profile['id'] <= 0) {
             throw new ApiException('Paymob Auth response did not satisfy the required token contract.', null, $response);
         }
 
         $issuedAt = $this->clock->now()->getTimestamp();
-        $token = new TokenResponseDTO($response['token'], $response['profile']['id'], $issuedAt, $issuedAt + 3600);
+        $token = new TokenResponseDTO($response['token'], $profile['id'], $issuedAt, $issuedAt + 3600);
         $this->repo->save($this->scope, $token);
         return $token;
     }
