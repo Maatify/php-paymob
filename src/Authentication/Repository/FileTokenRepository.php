@@ -23,8 +23,9 @@ final readonly class FileTokenRepository implements TokenRepositoryInterface
             try { $data = json_decode($json, true, 512, JSON_THROW_ON_ERROR); }
             catch (JsonException $e) { throw new TokenStorageException('Token cache contains malformed JSON.', previous: $e); }
             if (!is_array($data) || !isset($data['token'], $data['profile_id'], $data['issued_at'], $data['expires_at'])
-                || !is_string($data['token']) || $data['token'] === '' || !is_int($data['profile_id']) || $data['profile_id'] <= 0
-                || !is_int($data['issued_at']) || !is_int($data['expires_at'])) {
+                || !is_string($data['token']) || trim($data['token']) === '' || !is_int($data['profile_id']) || $data['profile_id'] <= 0
+                || !is_int($data['issued_at']) || $data['issued_at'] < 0 || !is_int($data['expires_at'])
+                || $data['expires_at'] <= $data['issued_at'] || $data['expires_at'] - $data['issued_at'] !== 3600) {
                 throw new TokenStorageException('Token cache is missing valid required fields.');
             }
             return new TokenResponseDTO($data['token'], $data['profile_id'], $data['issued_at'], $data['expires_at']);
@@ -33,6 +34,7 @@ final readonly class FileTokenRepository implements TokenRepositoryInterface
 
     public function save(TokenScope $scope, TokenResponseDTO $token): void
     {
+        self::assertValidToken($token);
         $this->locked($scope, LOCK_EX, function (string $path) use ($token): void {
             $json = json_encode(['token' => $token->token, 'profile_id' => $token->profileId, 'issued_at' => $token->issuedAt, 'expires_at' => $token->expiresAt], JSON_THROW_ON_ERROR);
             $temporary = tempnam($this->directory, '.paymob-token-');
@@ -43,6 +45,14 @@ final readonly class FileTokenRepository implements TokenRepositoryInterface
                 if (!rename($temporary, $path)) throw new TokenStorageException('Unable to atomically replace token cache.');
             } finally { if (file_exists($temporary) && !unlink($temporary)) throw new TokenStorageException('Unable to remove temporary token cache.'); }
         });
+    }
+
+    private static function assertValidToken(TokenResponseDTO $token): void
+    {
+        if (trim($token->token) === '' || $token->profileId <= 0 || $token->issuedAt < 0
+            || $token->expiresAt <= $token->issuedAt || $token->expiresAt - $token->issuedAt !== 3600) {
+            throw new TokenStorageException('Token cache state violates the required token lifecycle contract.');
+        }
     }
 
     public function clear(TokenScope $scope): void

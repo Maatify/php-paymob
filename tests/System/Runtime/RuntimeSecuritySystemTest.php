@@ -388,8 +388,8 @@ final class RuntimeSecuritySystemTest extends TestCase
         $a = new TokenScopeTestFactory('a');
         $b = new TokenScopeTestFactory('b');
         self::assertNull($repo->get($a->scope));
-        $repo->save($a->scope, new TokenResponseDTO('token-a', 1, 10, 20));
-        $repo->save($b->scope, new TokenResponseDTO('token-b', 2, 10, 20));
+        $repo->save($a->scope, new TokenResponseDTO('token-a', 1, 10, 3610));
+        $repo->save($b->scope, new TokenResponseDTO('token-b', 2, 10, 3610));
         self::assertSame('token-a', $repo->get($a->scope)?->token);
         self::assertSame('token-b', $repo->get($b->scope)?->token);
         $aFile = $directory . '/' . $a->scope->value() . '.json';
@@ -400,12 +400,83 @@ final class RuntimeSecuritySystemTest extends TestCase
         file_put_contents($aFile, '{"token":"only"}');
         try { $repo->get($a->scope); self::fail('Missing required fields must fail closed.'); }
         catch (\Maatify\Paymob\Exception\TokenStorageException) {}
-        $repo->save($a->scope, new TokenResponseDTO('token-a', 1, 10, 20));
+        $repo->save($a->scope, new TokenResponseDTO('token-a', 1, 10, 3610));
         $repo->clear($a->scope);
         self::assertNull($repo->get($a->scope));
         self::assertSame('token-b', $repo->get($b->scope)?->token);
         foreach (glob($directory . '/*') ?: [] as $file) unlink($file);
         rmdir($directory);
+    }
+
+    public function testFileRepositoryRejectsSemanticallyCorruptReadAndSaveWithoutReplacingValidState(): void
+    {
+        $directory = sys_get_temp_dir() . '/paymob-token-corrupt-' . bin2hex(random_bytes(6));
+        $repo = new FileTokenRepository($directory);
+        $scope = (new TokenScopeTestFactory('corrupt-file'))->scope;
+        $path = $directory . '/' . $scope->value() . '.json';
+        $valid = ['token' => 'valid-token', 'profile_id' => 1, 'issued_at' => 100, 'expires_at' => 3700];
+        $repo->save($scope, new TokenResponseDTO('valid-token', 1, 100, 3700));
+
+        foreach ([
+            [...$valid, 'token' => " \t\n"],
+            [...$valid, 'profile_id' => 0],
+            [...$valid, 'issued_at' => -1, 'expires_at' => 3599],
+            [...$valid, 'expires_at' => 100],
+            [...$valid, 'expires_at' => 99],
+            [...$valid, 'expires_at' => 3701],
+        ] as $corrupt) {
+            file_put_contents($path, json_encode($corrupt, JSON_THROW_ON_ERROR));
+            try { $repo->get($scope); self::fail('Semantically corrupt file token must fail closed.'); }
+            catch (TokenStorageException) { self::assertTrue(true); }
+        }
+
+        $repo->save($scope, new TokenResponseDTO('valid-token', 1, 100, 3700));
+        foreach ([
+            new TokenResponseDTO('', 1, 100, 3700),
+            new TokenResponseDTO(" \t", 1, 100, 3700),
+            new TokenResponseDTO('bad-profile', 0, 100, 3700),
+            new TokenResponseDTO('bad-issued', 1, -1, 3599),
+            new TokenResponseDTO('bad-expiry', 1, 100, 100),
+            new TokenResponseDTO('bad-lifetime', 1, 100, 3701),
+        ] as $corrupt) {
+            try { $repo->save($scope, $corrupt); self::fail('Semantically corrupt save must fail.'); }
+            catch (TokenStorageException) { self::assertSame('valid-token', $repo->get($scope)?->token); }
+        }
+
+        foreach (glob($directory . '/*') ?: [] as $file) unlink($file);
+        rmdir($directory);
+    }
+
+    public function testAuthRejectsCorruptTypedCachedStateWithoutRequestAndRefreshesValidExpiredCache(): void
+    {
+        $config = new PaymobConfig('cached-api-key', 'hmac', 1, 2, 3);
+        $scope = TokenScope::fromConfig($config);
+        $corruptRepo = new InMemoryTokenRepository();
+        $corruptRepo->save($scope, new TokenResponseDTO('still-live', 1, 0, 3601));
+        $api = new QueueApiClient();
+        try { (new AuthService($api, $config, $corruptRepo, new FixedTestClock(1000)))->getToken(); self::fail('Invalid lifetime must be rejected before Auth.'); }
+        catch (TokenStorageException) { self::assertCount(0, $api->postCalls); }
+
+        $expiredRepo = new InMemoryTokenRepository();
+        $expiredRepo->save($scope, new TokenResponseDTO('expired', 1, 0, 3600));
+        $api->postQueue = [['token' => 'fresh-after-expiry', 'profile' => ['id' => 1]]];
+        $fresh = (new AuthService($api, $config, $expiredRepo, new FixedTestClock(3600)))->getToken();
+        self::assertSame('fresh-after-expiry', $fresh->token);
+        self::assertCount(1, $api->postCalls);
+    }
+
+    public function testAuthRejectsWhitespaceProviderTokenWithOriginalResponseEvidence(): void
+    {
+        $config = new PaymobConfig('whitespace-api-key', 'hmac', 1, 2, 3);
+        $repo = new InMemoryTokenRepository();
+        $response = ['token' => " \t\n", 'profile' => ['id' => 9]];
+        $api = new QueueApiClient();
+        $api->postQueue = [$response];
+        try { (new AuthService($api, $config, $repo, new FixedTestClock(1000)))->getToken(); self::fail('Whitespace provider token must be malformed.'); }
+        catch (ApiException $exception) {
+            self::assertSame($response, $exception->getResponse());
+            self::assertNull($repo->get(TokenScope::fromConfig($config)));
+        }
     }
 
     public function testAuthUsesCacheClockAndExactProviderTtl(): void
@@ -428,11 +499,11 @@ final class RuntimeSecuritySystemTest extends TestCase
         $repo = new InMemoryTokenRepository();
         $scope = TokenScope::fromConfig($config);
         $otherScope = TokenScope::fromConfig(new PaymobConfig('other-key', 'hmac', 1, 2, 3));
-        $repo->save($scope, new TokenResponseDTO('expired', 1, 1, 999));
-        $repo->save($otherScope, new TokenResponseDTO('other-live', 2, 500, 2000));
+        $repo->save($scope, new TokenResponseDTO('expired', 1, 0, 3600));
+        $repo->save($otherScope, new TokenResponseDTO('other-live', 2, 500, 4100));
         $api = new QueueApiClient();
         $api->postQueue = [['token' => 'fresh-one', 'profile' => ['id' => 1]], ['token' => 'fresh-two', 'profile' => ['id' => 1]]];
-        $service = new AuthService($api, $config, $repo, new FixedTestClock(1000));
+        $service = new AuthService($api, $config, $repo, new FixedTestClock(4000));
         self::assertSame('fresh-one', $service->getToken()->token);
         self::assertSame('fresh-two', $service->getToken(forceRefresh: true)->token);
         self::assertSame('other-live', $repo->get($otherScope)?->token);
@@ -713,7 +784,7 @@ final class RuntimeSecuritySystemTest extends TestCase
         $config = new PaymobConfig('key', 'hmac', 1, 2, 3);
         $repo = new InMemoryTokenRepository();
         $scope = TokenScope::fromConfig($config);
-        $repo->save($scope, new TokenResponseDTO('old', 1, 1, 2000));
+        $repo->save($scope, new TokenResponseDTO('old', 1, 1, 3601));
         $api = new QueueApiClient();
         $api->postQueue = [new UnauthorizedException('Unauthorized', 401), ['token' => 'new', 'profile' => ['id' => 1]],
             ['id' => 5, 'created_at' => 'now', 'currency' => 'EGP', 'amount_cents' => 100]];
@@ -822,7 +893,7 @@ final class RuntimeSecuritySystemTest extends TestCase
     private function repoWithCachedToken(PaymobConfig $config): InMemoryTokenRepository
     {
         $repo = new InMemoryTokenRepository();
-        $repo->save(TokenScope::fromConfig($config), new TokenResponseDTO('cached', 1, 500, 2000));
+        $repo->save(TokenScope::fromConfig($config), new TokenResponseDTO('cached', 1, 500, 4100));
         return $repo;
     }
 }
