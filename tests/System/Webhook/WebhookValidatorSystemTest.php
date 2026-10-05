@@ -124,6 +124,19 @@ final class WebhookValidatorSystemTest extends TestCase
         }
     }
 
+    public function testDirectDtoHydrationRejectsNonStringHmacWithoutTypeError(): void
+    {
+        $payload = $this->validPayload();
+        $payload['hmac'] = ['malformed'];
+
+        try {
+            WebhookPayloadDTO::fromArray($payload);
+            self::fail('Malformed direct DTO HMAC input must fail with WebhookException.');
+        } catch (WebhookException) {
+            self::assertTrue(true);
+        }
+    }
+
     private function signObject(array $obj): string
     {
         $paths = ['amount_cents', 'created_at', 'currency', 'error_occured', 'has_parent_transaction', 'id',

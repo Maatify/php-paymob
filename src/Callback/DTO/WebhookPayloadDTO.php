@@ -57,6 +57,10 @@ final readonly class WebhookPayloadDTO implements \JsonSerializable
                 throw new WebhookException("Invalid typed webhook source_data field: {$field}");
             }
         }
+        $hmac = $data['hmac'] ?? null;
+        if ($hmac !== null && !is_string($hmac)) {
+            throw new WebhookException('Invalid typed webhook field: hmac');
+        }
 
         return new self(
             transactionId: $obj['id'],
@@ -68,7 +72,7 @@ final readonly class WebhookPayloadDTO implements \JsonSerializable
             paymentMethod: $obj['source_data']['type'],
             subType      : $obj['source_data']['sub_type'],
             maskedPan    : $obj['source_data']['pan'],
-            hmac         : $data['hmac'] ?? null,
+            hmac         : $hmac,
             raw          : $data
         );
     }
