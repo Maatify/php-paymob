@@ -17,35 +17,37 @@ declare(strict_types=1);
  * Project: paymob-php
  */
 
-use Maatify\Paymob\DTO\PaymobConfigDTO;
-use Maatify\Paymob\DTO\Auth\TokenResponseDTO;
+use Maatify\Paymob\Config\PaymobConfig;
+use Maatify\Paymob\Authentication\DTO\TokenResponseDTO;
 use Maatify\Paymob\Exception\AuthException;
 use Maatify\Paymob\Exception\NetworkException;
 use Maatify\Paymob\Exception\ApiException;
-use Maatify\Paymob\Exception\PaymobException;
-use Maatify\Paymob\Http\ApiClient;
-use Maatify\Paymob\Repository\InMemoryTokenRepository;
-use Maatify\Paymob\Service\AuthService;
+use Maatify\Paymob\Exception\PaymobExceptionInterface;
+use Maatify\Paymob\Exception\UnauthorizedException;
+use Maatify\Paymob\Adapter\ApiClient;
+use Maatify\Paymob\Authentication\Repository\InMemoryTokenRepository;
+use Maatify\Paymob\Authentication\Service\AuthService;
+use Maatify\SharedCommon\Infrastructure\SystemClock;
 
 // ───── bootstrap ─────
 
 /** @var PaymobExampleBootstrap $bootstrap */
 $bootstrap = require __DIR__ . '/bootstrap.php';
 
-// جهّز الـ services
+// Prepare the services.
 $config = $bootstrap->config;
 $client = $bootstrap->client;
 $logger = $bootstrap->logger;
 
-// Repository بسيط (ممكن تستبدله بـ MySQL أو Redis)
+// Use in-memory storage; consumers may inject another repository.
 $repo = new InMemoryTokenRepository();
 
 // AuthService
-$authService = new AuthService($client, $config, $repo);
+$authService = new AuthService($client, $config, $repo, new SystemClock(new \DateTimeZone('UTC')));
 
-// ───── التنفيذ ─────
+// Execute the example.
 try {
-    // أول call → API request فعلي
+    // The first call requests a token.
     /** @var TokenResponseDTO $tokenDto */
     $tokenDto = $authService->getToken();
 
@@ -56,7 +58,7 @@ try {
     echo "Expires At: " . date('Y-m-d H:i:s', $tokenDto->expiresAt) . "\n";
 
 
-    // تاني call في نفس runtime → يقرأ من الذاكرة
+    // The second call reuses the in-memory token.
     $token2 = $authService->getToken();
     echo "2nd Token generated successfully" . PHP_EOL;
     echo "Token: {$token2->token}\n";
@@ -64,14 +66,15 @@ try {
     echo "Issued At: " . date('Y-m-d H:i:s', $token2->issuedAt) . "\n";
     echo "Expires At: " . date('Y-m-d H:i:s', $token2->expiresAt) . "\n";
 
+} catch (UnauthorizedException $e) {
+    echo "❌ Paymob authentication was rejected: " . $e->getMessage() . PHP_EOL;
 } catch (AuthException $e) {
     echo "❌ Auth error: " . $e->getMessage() . PHP_EOL;
 } catch (NetworkException $e) {
     echo "❌ Network error: " . $e->getMessage() . PHP_EOL;
 } catch (ApiException $e) {
     echo "❌ API error: " . $e->getMessage() . PHP_EOL;
-} catch (PaymobException $e) {
+} catch (PaymobExceptionInterface $e) {
     echo "❌ General Paymob SDK error: " . $e->getMessage() . PHP_EOL;
 }
-
 

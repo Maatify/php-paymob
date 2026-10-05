@@ -13,23 +13,28 @@ declare(strict_types=1);
 
 namespace Maatify\Paymob\Facade;
 
-use Maatify\Paymob\DTO\Auth\TokenResponseDTO;
-use Maatify\Paymob\DTO\KioskFlowResultDTO;
-use Maatify\Paymob\DTO\Order\OrderRequestDTO;
-use Maatify\Paymob\DTO\Order\OrderResponseDTO;
-use Maatify\Paymob\DTO\Payment\BillingDataDTO;
-use Maatify\Paymob\DTO\Payment\KioskPaymentRequestDTO;
-use Maatify\Paymob\DTO\Payment\KioskPaymentResponseDTO;
-use Maatify\Paymob\DTO\Payment\PaymentKeyRequestDTO;
-use Maatify\Paymob\DTO\Payment\PaymentKeyResponseDTO;
-use Maatify\Paymob\DTO\Payment\WalletPaymentRequestDTO;
-use Maatify\Paymob\DTO\Payment\WalletPaymentResponseDTO;
-use Maatify\Paymob\DTO\PaymobConfigDTO;
+use Maatify\Paymob\Authentication\DTO\TokenResponseDTO;
+use Maatify\Paymob\Payment\DTO\KioskFlowResultDTO;
+use Maatify\Paymob\Order\Command\CreateOrderCommand;
+use Maatify\Paymob\Order\DTO\OrderResponseDTO;
+use Maatify\Paymob\Payment\ValueObject\BillingData;
+use Maatify\Paymob\Payment\Command\InitiateKioskPaymentCommand;
+use Maatify\Paymob\Payment\DTO\KioskPaymentResponseDTO;
+use Maatify\Paymob\Payment\Command\GeneratePaymentKeyCommand;
+use Maatify\Paymob\Payment\DTO\PaymentKeyResponseDTO;
+use Maatify\Paymob\Payment\Command\InitiateWalletPaymentCommand;
+use Maatify\Paymob\Payment\DTO\WalletPaymentResponseDTO;
+use Maatify\Paymob\Config\PaymobConfig;
 use Maatify\Paymob\Exception\{ApiException, AuthException, NetworkException, OrderException, TransactionException};
-use Maatify\Paymob\DTO\WalletFlowResultDTO;
-use Maatify\Paymob\Http\ApiClientInterface;
-use Maatify\Paymob\Repository\TokenRepositoryInterface;
-use Maatify\Paymob\Service\{AuthService, KioskPaymentService, OrderService, PaymentKeyService, WalletPaymentService};
+use Maatify\Paymob\Payment\DTO\WalletFlowResultDTO;
+use Maatify\Paymob\Adapter\ApiClientInterface;
+use Maatify\Paymob\Authentication\Repository\TokenRepositoryInterface;
+use Maatify\SharedCommon\Contracts\ClockInterface;
+use Maatify\Paymob\Authentication\Service\AuthService;
+use Maatify\Paymob\Order\Service\OrderService;
+use Maatify\Paymob\Payment\Service\KioskPaymentService;
+use Maatify\Paymob\Payment\Service\PaymentKeyService;
+use Maatify\Paymob\Payment\Service\WalletPaymentService;
 use Psr\Log\LoggerInterface;
 use Throwable;
 
@@ -42,29 +47,30 @@ final class PaymobFacade
     private WalletPaymentService $wallet;
 
     public function __construct(
-        private readonly PaymobConfigDTO $config,
+        private readonly PaymobConfig $config,
         private readonly ApiClientInterface $http,
         private readonly TokenRepositoryInterface $repo,
+        private readonly ClockInterface $clock,
         private readonly ?LoggerInterface $logger = null,
         private readonly string $channel = 'paymob.facade.kiosk'
     ) {
-        $this->auth   = new AuthService($this->http, $this->config, $this->repo);
-        $this->orders = new OrderService($this->http, $this->config, $this->auth);
+        $this->auth   = new AuthService($this->http, $this->config, $this->repo, $this->clock);
+        $this->orders = new OrderService($this->http, $this->auth);
         $this->keys   = new PaymentKeyService($this->http, $this->auth);
         $this->kiosk  = new KioskPaymentService($this->http, $this->auth);
-        $this->wallet = new WalletPaymentService($this->http, $this->auth);
+        $this->wallet = new WalletPaymentService($this->http);
     }
 
     /**
      * Full kiosk payment flow (Order → Key → Pay).
      *
-     * @param   OrderRequestDTO  $orderRequest
-     * @param   BillingDataDTO   $billing
+     * @param   CreateOrderCommand  $orderRequest
+     * @param   BillingData   $billing
      *
      * @return KioskFlowResultDTO
      * @throws AuthException|OrderException|TransactionException|NetworkException|ApiException|Throwable
      */
-    public function payViaKiosk(OrderRequestDTO $orderRequest, BillingDataDTO $billing): KioskFlowResultDTO
+    public function payViaKiosk(CreateOrderCommand $orderRequest, BillingData $billing): KioskFlowResultDTO
     {
         $this->logger?->info("[{$this->channel}] Starting payViaKiosk flow");
 
@@ -72,17 +78,13 @@ final class PaymobFacade
             // 0. Prefetch Auth
             /** @var TokenResponseDTO $token */
             $token = $this->auth->getToken();
-            $this->logger?->info("[{$this->channel}.auth] Token retrieved", [
-                'token_hash' => substr(sha1($token->token), 0, 12)
-            ]);
 
             // 1. Create Order
             /** @var OrderResponseDTO $order */
             $order = $this->orders->createOrder($orderRequest);
-            $this->logger?->info("[{$this->channel}.order] Order created", ['id' => $order->id]);
 
             // 2. Generate Payment Key
-            $keyRequest = new PaymentKeyRequestDTO(
+            $keyRequest = new GeneratePaymentKeyCommand(
                 orderId      : $order->id,
                 integrationId: $this->config->integrationIdKiosk,
                 amountCents  : $order->amountCents,
@@ -97,20 +99,12 @@ final class PaymobFacade
             // 3. Pay via Kiosk
             /** @var KioskPaymentResponseDTO $kiosk */
             $kiosk = $this->kiosk->pay(
-                new KioskPaymentRequestDTO($paymentKey->token)
+                new InitiateKioskPaymentCommand($paymentKey->token)
             );
-            $this->logger?->info("[{$this->channel}.payment] Kiosk payment initiated", [
-                'transaction_id' => $kiosk->transactionId,
-                'bill_ref'       => $kiosk->billReference
-            ]);
 
             return new KioskFlowResultDTO($order, $kiosk);
 
         } catch (Throwable $e) {
-            $this->logger?->error("[{$this->channel}] payViaKiosk failed", [
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString()
-            ]);
             throw $e;
         }
     }
@@ -118,29 +112,27 @@ final class PaymobFacade
     /**
      * Full Wallet payment flow (Order → Key → Wallet Pay).
      *
-     * @param OrderRequestDTO $orderRequest
-     * @param BillingDataDTO  $billing
+     * @param CreateOrderCommand $orderRequest
+     * @param BillingData  $billing
      * @param string          $walletNumber  Mobile wallet MSISDN (e.g., "2010xxxxxxx")
      *
      * @return WalletFlowResultDTO
      * @throws AuthException|OrderException|TransactionException|NetworkException|ApiException|Throwable
      */
-    public function payViaWallet(OrderRequestDTO $orderRequest, BillingDataDTO $billing, string $walletNumber): WalletFlowResultDTO
+    public function payViaWallet(CreateOrderCommand $orderRequest, BillingData $billing, string $walletNumber): WalletFlowResultDTO
     {
         $this->logger?->info("[{$this->channel}] Starting payViaWallet flow");
 
         // 0. Prefetch Auth
         /** @var TokenResponseDTO $token */
         $token = $this->auth->getToken();
-        $this->logger?->info("[{$this->channel}] Auth token retrieved");
 
         // 1. Create Order
         /** @var OrderResponseDTO $order */
         $order = $this->orders->createOrder($orderRequest);
-        $this->logger?->info("[{$this->channel}] Order created", ['id' => $order->id]);
 
         // 2. Generate Payment Key
-        $keyRequest = new PaymentKeyRequestDTO(
+        $keyRequest = new GeneratePaymentKeyCommand(
             orderId      : $order->id,
             integrationId: $this->config->integrationIdWallet,
             amountCents  : $order->amountCents,
@@ -149,20 +141,15 @@ final class PaymobFacade
         );
         /** @var PaymentKeyResponseDTO $paymentKey */
         $paymentKey = $this->keys->generate($keyRequest);
-        $this->logger?->info("[{$this->channel}] Payment key generated");
 
         // 3. Wallet Payment
         /** @var WalletPaymentResponseDTO $wallet */
         $wallet = $this->wallet->pay(
-            new WalletPaymentRequestDTO(
+            new InitiateWalletPaymentCommand(
                 paymentToken: $paymentKey->token,
                 phoneNumber: $walletNumber
             )
         );
-        $this->logger?->info("[{$this->channel}] Wallet payment initiated", [
-            'transaction_id' => $wallet->transactionId,
-            'redirect_url'   => $wallet->redirectUrl
-        ]);
 
         return new WalletFlowResultDTO($order, $wallet);
     }

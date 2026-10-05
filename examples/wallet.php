@@ -20,40 +20,41 @@ declare(strict_types=1);
 /** @var PaymobExampleBootstrap $bootstrap */
 $bootstrap = require __DIR__ . '/bootstrap.php';
 
-use Maatify\Paymob\DTO\Order\OrderItemDTO;
-use Maatify\Paymob\DTO\Order\OrderItemsDTO;
-use Maatify\Paymob\DTO\Order\OrderRequestDTO;
-use Maatify\Paymob\DTO\Payment\BillingDataDTO;
-use Maatify\Paymob\DTO\Payment\PaymentKeyRequestDTO;
-use Maatify\Paymob\DTO\Payment\WalletPaymentRequestDTO;
+use Maatify\Paymob\Order\ValueObject\OrderItem;
+use Maatify\Paymob\Order\DTO\OrderItemCollectionDTO;
+use Maatify\Paymob\Order\Command\CreateOrderCommand;
+use Maatify\Paymob\Payment\ValueObject\BillingData;
+use Maatify\Paymob\Payment\Command\GeneratePaymentKeyCommand;
+use Maatify\Paymob\Payment\Command\InitiateWalletPaymentCommand;
 use Maatify\Paymob\Enum\CurrencyEnum;
-use Maatify\Paymob\Repository\InMemoryTokenRepository;
-use Maatify\Paymob\Service\AuthService;
-use Maatify\Paymob\Service\OrderService;
-use Maatify\Paymob\Service\PaymentKeyService;
-use Maatify\Paymob\Service\WalletPaymentService;
+use Maatify\Paymob\Authentication\Repository\InMemoryTokenRepository;
+use Maatify\Paymob\Authentication\Service\AuthService;
+use Maatify\SharedCommon\Infrastructure\SystemClock;
+use Maatify\Paymob\Order\Service\OrderService;
+use Maatify\Paymob\Payment\Service\PaymentKeyService;
+use Maatify\Paymob\Payment\Service\WalletPaymentService;
 use Maatify\Paymob\Exception\{
     AuthException,
     ApiException,
     NetworkException,
     OrderException,
+    PaymobExceptionInterface,
     TransactionException
 };
 
 $repo = new InMemoryTokenRepository();
-$authService = new AuthService($bootstrap->client, $bootstrap->config, $repo);
-$orderService = new OrderService($bootstrap->client, $bootstrap->config, $authService);
+$authService = new AuthService($bootstrap->client, $bootstrap->config, $repo, new SystemClock(new \DateTimeZone('UTC')));
+$orderService = new OrderService($bootstrap->client, $authService);
 $paymentKeyService = new PaymentKeyService($bootstrap->client, $authService);
-$walletService = new WalletPaymentService($bootstrap->client, $authService);
+$walletService = new WalletPaymentService($bootstrap->client);
 
 try {
     // Step 1: Create order
-    $items = new OrderItemsDTO(
-        new OrderItemDTO('Game Credits', 20000, 1),
-        new OrderItemDTO('VIP Pass', 5000, 1)
-    );
+    $items = [
+        new OrderItem('Game Credits', 20000, 1),
+        new OrderItem('VIP Pass', 5000, 1)];
 
-    $orderRequest = new OrderRequestDTO(
+    $orderRequest = new CreateOrderCommand(
         amountCents    : 25000,
         currency       : CurrencyEnum::EGP,
         merchantOrderId: 'ORD-' . uniqid(),
@@ -64,7 +65,7 @@ try {
     echo "✅ Order created. ID = {$orderResponse->id}\n";
 
     // Step 2: Billing Data
-    $billing = new BillingDataDTO(
+    $billing = new BillingData(
         firstName  : 'Mohamed',
         lastName   : 'Abdulalim',
         email      : 'mohamed@example.com',
@@ -80,7 +81,7 @@ try {
     );
 
     // Step 3: Generate Payment Key (Wallet Integration ID)
-    $paymentKeyRequest = new PaymentKeyRequestDTO(
+    $paymentKeyRequest = new GeneratePaymentKeyCommand(
         orderId      : $orderResponse->id,
         integrationId: $bootstrap->config->integrationIdWallet,
         amountCents  : $orderResponse->amountCents,
@@ -92,7 +93,7 @@ try {
     echo "✅ Payment key generated. Token = {$paymentKeyResponse->token}\n";
 
     // Step 4: Pay via Wallet (customer phone required)
-    $walletRequest = new WalletPaymentRequestDTO(
+    $walletRequest = new InitiateWalletPaymentCommand(
         paymentToken: $paymentKeyResponse->token,
         phoneNumber : '01095556063' // customer’s wallet phone
     );
@@ -105,11 +106,13 @@ try {
     echo "Currency       : {$walletResponse->currency->value}\n";
     echo "Success        : " . ($walletResponse->success ? 'true' : 'false') . "\n";
     echo "Pending        : " . ($walletResponse->pending ? 'true' : 'false') . "\n";
-    echo "Redirect URL   : {$walletResponse->redirectUrl}\n"; // لو المحفظة محتاجة Redirect/SMS
+    echo "Redirect URL   : {$walletResponse->redirectUrl}\n"; // The provider may return a redirect URL.
     echo "Message        : {$walletResponse->statusMessage}\n";
 } catch (AuthException|OrderException|TransactionException|NetworkException|ApiException $e) {
     echo "❌ SDK error: " . $e->getMessage() . PHP_EOL;
     print_r($e->getResponse());
+} catch (PaymobExceptionInterface $e) {
+    echo "❌ Paymob SDK error: " . $e->getMessage() . PHP_EOL;
 } catch (Throwable $e) {
     echo "❌ Unexpected error: " . $e->getMessage();
 }

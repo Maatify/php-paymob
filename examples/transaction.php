@@ -14,19 +14,21 @@ declare(strict_types=1);
 /** @var PaymobExampleBootstrap $bootstrap */
 
 use Maatify\Paymob\Exception\ApiException;
+use Maatify\Paymob\Exception\PaymobExceptionInterface;
 use Maatify\Paymob\Exception\AuthException;
 use Maatify\Paymob\Exception\NetworkException;
 use Maatify\Paymob\Exception\OrderException;
 use Maatify\Paymob\Exception\TransactionException;
-use Maatify\Paymob\Repository\InMemoryTokenRepository;
-use Maatify\Paymob\Service\AuthService;
-use Maatify\Paymob\Service\TransactionService;
+use Maatify\Paymob\Authentication\Repository\InMemoryTokenRepository;
+use Maatify\Paymob\Authentication\Service\AuthService;
+use Maatify\SharedCommon\Infrastructure\SystemClock;
+use Maatify\Paymob\Transaction\Service\TransactionService;
 
 $bootstrap = require __DIR__ . '/bootstrap.php';
 
 // Auth + Services
 $repo = new InMemoryTokenRepository();
-$authService = new AuthService($bootstrap->client, $bootstrap->config, $repo);
+$authService = new AuthService($bootstrap->client, $bootstrap->config, $repo, new SystemClock(new \DateTimeZone('UTC')));
 
 $transactionService = new TransactionService($bootstrap->client, $authService);
 
@@ -35,7 +37,7 @@ $transactionService = new TransactionService($bootstrap->client, $authService);
 //$transactionId = 344212847;
 
 try {
-    // Transaction ID من عملية سابقة
+    // Use a transaction ID returned by an earlier payment.
     $transactionId = 344212847;
 
     $transaction = $transactionService->getTransaction($transactionId);
@@ -54,7 +56,8 @@ try {
 } catch (AuthException|TransactionException|NetworkException|ApiException $e) {
     echo "❌ Error fetching transaction: " . $e->getMessage() . PHP_EOL;
     print_r($e->getResponse());
+} catch (PaymobExceptionInterface $e) {
+    echo "❌ Paymob SDK error: " . $e->getMessage() . PHP_EOL;
 } catch (Throwable $e) {
     echo "❌ Unexpected error: " . $e->getMessage();
 }
-

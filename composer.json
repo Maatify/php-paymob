@@ -1,24 +1,40 @@
 {
-  "name": "maatify/paymob-php",
-  "description": "PHP SDK for Paymob APIs (Egypt) – reference: https://developers.paymob.com/egypt/ . Supports Auth, Orders, Transactions, and Kiosk payments.",
+  "name": "maatify/php-paymob",
+  "description": "PHP SDK for Paymob APIs (Egypt) \u2013 reference: https://developers.paymob.com/egypt/ . Supports Auth, Orders, Transactions, and Kiosk payments.",
   "type": "library",
-  "license": "MIT",
+  "license": "proprietary",
   "autoload": {
     "psr-4": {
       "Maatify\\Paymob\\": "src/"
     }
   },
   "require": {
-    "php": "^8.2 || ^8.3 || ^8.4",
-    "ext-json": "*",
+    "php": "^8.4",
     "ext-curl": "*",
+    "ext-json": "*",
+    "maatify/exceptions": "^1.0",
+    "maatify/shared-common": "^1.0",
     "psr/log": "^3.0"
   },
   "require-dev": {
     "ext-pdo": "*",
-    "phpunit/phpunit": "^11.5",
-    "vlucas/phpdotenv": "^5.6",
+    "ext-pdo_mysql": "*",
+    "guzzlehttp/guzzle": "^7.0",
     "monolog/monolog": "^3.6",
-    "guzzlehttp/guzzle": "^7.0"
+    "phpunit/phpunit": "^11.5",
+    "vlucas/phpdotenv": "^5.6"
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "Maatify\\Paymob\\Tests\\": "tests/"
+    }
+  },
+  "suggest": {
+    "ext-pdo": "Required only for the built-in MySQL/MariaDB token repository (MySqlTokenRepository).",
+    "ext-pdo_mysql": "Required only for the built-in MySQL/MariaDB token repository (MySqlTokenRepository).",
+    "guzzlehttp/guzzle": "Required only when selecting the built-in Guzzle HTTP adapter (GuzzleApiClient)."
+  },
+  "config": {
+    "sort-packages": true
   }
 }

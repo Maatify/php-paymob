@@ -13,4 +13,4 @@ declare(strict_types=1);
 
 namespace Maatify\Paymob\Exception;
 
-class InvalidRequestException extends ApiException {}
+class InvalidRequestException extends ValidationException {}

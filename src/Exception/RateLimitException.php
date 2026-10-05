@@ -1,16 +1,18 @@
 <?php
-/**
- * Created by Maatify.dev
- * User: Maatify.dev
- * Date: 2025-09-16
- * Time: 17:10
- * Project: paymob-php
- * IDE: PhpStorm
- * https://www.Maatify.dev
- */
-
 declare(strict_types=1);
 
 namespace Maatify\Paymob\Exception;
 
-class RateLimitException extends ApiException {}
+use Maatify\Exceptions\Exception\RateLimit\TooManyRequestsMaatifyException;
+use Throwable;
+
+class RateLimitException extends TooManyRequestsMaatifyException implements PaymobExceptionInterface
+{
+    use ProviderFailureContextTrait;
+    public function __construct(string $message, ?int $providerStatusCode = null, array|string|null $response = null, ?Throwable $previous = null)
+    {
+        $this->initializeProviderFailureContext($providerStatusCode, $response);
+        parent::__construct($message, previous: $previous,
+            httpStatusOverride: $providerStatusCode !== null && $providerStatusCode >= 400 && $providerStatusCode < 500 ? $providerStatusCode : null);
+    }
+}
