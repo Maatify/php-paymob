@@ -6,7 +6,7 @@ namespace Maatify\Paymob\ProviderVerification\Support;
 
 use Dotenv\Dotenv;
 use InvalidArgumentException;
-use Maatify\Paymob\DTO\PaymobConfigDTO;
+use Maatify\Paymob\Config\PaymobConfig;
 use RuntimeException;
 
 /** Holds scenario-scoped local inputs for manual Paymob verification. */
@@ -22,14 +22,13 @@ final readonly class VerificationConfig
         public ?int $walletIntegrationId,
         public ?string $walletTestMsisdn,
         public ?int $testTransactionId,
-        public ?string $keysExpiry,
         public string $scenario,
         public ?string $paymentMethod,
     ) {}
 
     /**
-     * Read the local .env without displaying values and validate only inputs
-     * required by the requested scenario.
+     * Read the local .env without displaying values and validate package credentials,
+     * integration configuration, and the additional inputs required by the scenario.
      */
     public static function load(string $repositoryRoot, string $scenario, ?string $paymentMethod = null): self
     {
@@ -58,9 +57,7 @@ final readonly class VerificationConfig
         $values = Dotenv::parse($contents);
         $apiKey = self::required($values, 'PAYMOB_API_KEY');
         $baseUrl = rtrim(self::required($values, 'PAYMOB_BASE_URL'), '/');
-        $hmacSecret = isset($values['PAYMOB_HMAC_SECRET']) && trim($values['PAYMOB_HMAC_SECRET']) !== ''
-            ? trim($values['PAYMOB_HMAC_SECRET'])
-            : '';
+        $hmacSecret = self::required($values, 'PAYMOB_HMAC_SECRET');
 
         if ($baseUrl !== 'https://accept.paymob.com/api') {
             throw new RuntimeException('PAYMOB_BASE_URL does not match the Paymob Egypt API base URL.');
@@ -72,28 +69,9 @@ final readonly class VerificationConfig
         $walletTestMsisdn = null;
         $testTransactionId = null;
 
-        $requiredIntegration = match (true) {
-            $scenario === 'payment-key' && $paymentMethod === 'card' => 'card',
-            $scenario === 'payment-key' && $paymentMethod === 'kiosk' => 'kiosk',
-            $scenario === 'payment-key' && $paymentMethod === 'wallet' => 'wallet',
-            $scenario === 'kiosk' => 'kiosk',
-            $scenario === 'wallet' => 'wallet',
-            default => null,
-        };
-
-        if ($requiredIntegration !== null) {
-            $key = match ($requiredIntegration) {
-                'card' => 'PAYMOB_INTEGRATION_ID_CARD',
-                'kiosk' => 'PAYMOB_INTEGRATION_ID_KIOSK',
-                'wallet' => 'PAYMOB_INTEGRATION_ID_WALLET',
-            };
-            $id = self::positiveInteger($values, $key);
-            match ($requiredIntegration) {
-                'card' => $cardIntegrationId = $id,
-                'kiosk' => $kioskIntegrationId = $id,
-                'wallet' => $walletIntegrationId = $id,
-            };
-        }
+        $cardIntegrationId = self::positiveInteger($values, 'PAYMOB_INTEGRATION_ID_CARD');
+        $kioskIntegrationId = self::positiveInteger($values, 'PAYMOB_INTEGRATION_ID_KIOSK');
+        $walletIntegrationId = self::positiveInteger($values, 'PAYMOB_INTEGRATION_ID_WALLET');
 
         if ($scenario === 'wallet') {
             $walletTestMsisdn = self::required($values, 'PAYMOB_TEST_WALLET_MSISDN');
@@ -103,21 +81,8 @@ final readonly class VerificationConfig
         }
 
         if ($scenario === 'transaction-inquiry') {
-            $value = self::required($values, 'PAYMOB_TEST_TRANSACTION_ID');
-            if (!ctype_digit($value) || $value[0] === '0' || (string)(int)$value !== $value) {
-                throw new RuntimeException('The transaction inquiry input must be a positive integer.');
-            }
-            $testTransactionId = (int)$value;
-        }
-
-        $keysExpiry = isset($values['PAYMOB_KEYS_EXPIRY']) && trim((string)$values['PAYMOB_KEYS_EXPIRY']) !== ''
-            ? trim((string)$values['PAYMOB_KEYS_EXPIRY'])
-            : null;
-
-        if ($keysExpiry !== null) {
-            $_ENV['PAYMOB_KEYS_EXPIRY'] = $keysExpiry;
-        } else {
-            unset($_ENV['PAYMOB_KEYS_EXPIRY']);
+            $value = $values['PAYMOB_TEST_TRANSACTION_ID'] ?? null;
+            $testTransactionId = self::canonicalPositiveInteger($value, 'The transaction inquiry input must be a positive integer.');
         }
 
         return new self(
@@ -130,23 +95,21 @@ final readonly class VerificationConfig
             $walletIntegrationId,
             $walletTestMsisdn,
             $testTransactionId,
-            $keysExpiry,
             $scenario,
             $paymentMethod,
         );
     }
 
     /** Build the package configuration while leaving unused integration IDs unselected. */
-    public function packageConfig(): PaymobConfigDTO
+    public function packageConfig(): PaymobConfig
     {
-        // PaymobConfigDTO requires all IDs; zero fills only fields unused by this scenario.
-        return new PaymobConfigDTO(
+        return new PaymobConfig(
             $this->apiKey,
+            $this->hmacSecret,
             $this->cardIntegrationId ?? 0,
             $this->kioskIntegrationId ?? 0,
             $this->walletIntegrationId ?? 0,
             $this->baseUrl,
-            $this->hmacSecret,
         );
     }
 
@@ -170,9 +133,22 @@ final readonly class VerificationConfig
     /** @param array<string, string> $values */
     private static function positiveInteger(array $values, string $key): int
     {
-        $value = self::required($values, $key);
-        if (!ctype_digit($value) || (int)$value < 1) {
-            throw new RuntimeException('A required integration ID is not a positive integer.');
+        return self::canonicalPositiveInteger(
+            $values[$key] ?? null,
+            'A required integration ID is not a positive integer.',
+        );
+    }
+
+    private static function canonicalPositiveInteger(mixed $value, string $message): int
+    {
+        if (!is_string($value) || preg_match('/^[1-9][0-9]*$/D', $value) !== 1) {
+            throw new RuntimeException($message);
+        }
+
+        $maximum = (string)PHP_INT_MAX;
+        if (strlen($value) > strlen($maximum)
+            || (strlen($value) === strlen($maximum) && strcmp($value, $maximum) > 0)) {
+            throw new RuntimeException($message);
         }
 
         return (int)$value;

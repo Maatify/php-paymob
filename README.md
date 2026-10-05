@@ -1,7 +1,7 @@
 # 📘 Paymob PHP SDK
 
-![PHP](https://img.shields.io/badge/PHP-%5E8.2-blue)
-![License](https://img.shields.io/badge/license-MIT-green)
+![PHP](https://img.shields.io/badge/PHP-%5E8.4-blue)
+![License](https://img.shields.io/badge/license-proprietary-blue)
 ![Status](https://img.shields.io/badge/status-Development-orange)
 
 Private PHP SDK for integrating with **[Paymob Egypt APIs](https://developers.paymob.com/egypt/)**.  
@@ -11,15 +11,15 @@ Provides a clean, PSR-compliant wrapper around Paymob’s REST APIs with **DTOs,
 
 ## ✨ Features
 
-* ✅ Authentication (`/auth/tokens`) with auto-expiry + retry on 401.
-* ✅ Config via `PaymobConfigDTO` (API key, integration IDs, base URL).
-* ✅ Token caching via `TokenRepositoryInterface` (in-memory, file, or DB/Redis implementations).
+* ✅ Authentication (`/auth/tokens`) with a 3600-second token lifetime and scoped cache.
+* ✅ Config via `PaymobConfig` (API key, HMAC secret, integration IDs, HTTPS base URL).
+* ✅ Token caching via scoped `TokenRepositoryInterface` (in-memory, file, MySQL/MariaDB, or consumer implementation).
 * ✅ Pluggable HTTP clients (`CurlApiClient`, `GuzzleApiClient`, or unified `ApiClient`).
 * ✅ Structured exceptions (`AuthException`, `OrderException`, `TransactionException`, etc).
 * ✅ `PaymobExceptionFactory` for mapping Paymob error codes → typed exceptions.
 * ✅ Logging support (PSR-3 / Monolog).
-* ✅ Orders API (`createOrder`) with `OrderRequestDTO`, `OrderResponseDTO`, `OrderItemDTO`, `OrderItemsDTO`.
-* ✅ Payment Keys API (/acceptance/payment_keys) with `PaymentKeyRequestDTO`, `PaymentKeyResponseDTO`, `BillingDataDTO`.
+* ✅ Orders API (`createOrder`) with `CreateOrderCommand`, `OrderResponseDTO`, `OrderItem`, `OrderItemCollectionDTO`.
+* ✅ Payment Keys API (/acceptance/payment_keys) with `GeneratePaymentKeyCommand`, `PaymentKeyResponseDTO`, `BillingData`.
 * ✅ Kiosk Payments API (pay) with typed response `KioskPaymentResponseDTO`.
 * ✅ Facade (PaymobFacade) for full flows (e.g. payViaKiosk) in one call.
 * ✅ Wallet Payments API (pay) with typed response `WalletPaymentResponseDTO`.
@@ -52,84 +52,30 @@ PAYMOB_API_KEY=your-api-key
 PAYMOB_INTEGRATION_ID_CARD=your-integration-id-card
 PAYMOB_INTEGRATION_ID_KIOSK=your-integration-id-kiosk
 PAYMOB_INTEGRATION_ID_WALLET=your-integration-id-wallet
-PAYMOB_BASE_URL=https://accept.paymobsolutions.com/api
-PAYMOB_KEYS_EXPIRY=180
+PAYMOB_HMAC_SECRET=your-hmac-secret
+PAYMOB_BASE_URL=https://accept.paymob.com/api
 ```
 
 ---
 
 ## 🧱 Project Structure (current)
 
-```
+```text
 src/
- ├── DTO/
- │    ├── PaymobConfigDTO.php
- │    ├── Auth/
- │    │    └── TokenResponseDTO.php
- │    ├── Order/
- │    │    ├── OrderItemDTO.php
- │    │    ├── OrderItemsDTO.php
- │    │    ├── OrderRequestDTO.php
- │    │    └── OrderResponseDTO.php
- │    ├── Payment/
- │    │    ├── BillingDataDTO.php
- │    │    ├── PaymentKeyRequestDTO.php
- │    │    ├── PaymentKeyResponseDTO.php
- │    │    ├── KioskPaymentRequestDTO.php
- │    │    ├── KioskPaymentResponseDTO.php
- │    │    ├── WalletPaymentRequestDTO.php
- │    │    └── WalletPaymentResponseDTO.php
- │    ├── Transaction/
- │    │    └── TransactionResponseDTO.php
- │    └── Webhook/
- │         └── ReturnUrlResponseDTO.php
- ├── Enum/
- │    └── CurrencyEnum.php
- ├── Exception/
- │    ├── PaymobException.php
- │    ├── ApiException.php
- │    ├── AuthException.php
- │    ├── OrderException.php
- │    ├── TransactionException.php
- │    ├── WebhookException.php
- │    ├── NetworkException.php
- │    └── PaymobExceptionFactory.php
- ├── Facade/
- │    └── PaymobFacade.php   ← full flows (Kiosk + Wallet)
- ├── Http/
- │    ├── ApiClientInterface.php
- │    ├── CurlApiClient.php
- │    ├── GuzzleApiClient.php
- │    └── ApiClient.php
- ├── Repository/
- │    ├── TokenRepositoryInterface.php
- │    └── InMemoryTokenRepository.php
- ├── Service/
- │    ├── AuthService.php
- │    ├── OrderService.php
- │    ├── PaymentKeyService.php
- │    ├── KioskPaymentService.php
- │    ├── WalletPaymentService.php
- │    ├── TransactionService.php
- │    └── ReturnUrlHandler.php
- ├── Webhook/
- │    ├── WebhookValidator.php
- ├── PaymobConfigDTO.php
- ├── KioskFlowResultDTO.php
- └── WalletFlowResultDTO.php
+├── Adapter/
+├── Authentication/{DTO,Repository,Service,ValueObject}/
+├── Callback/{DTO,Service}/
+├── Config/
+├── Enum/
+├── Exception/
+├── Factory/
+├── Facade/
+├── Order/{Command,DTO,Service,ValueObject}/
+├── Payment/{Command,DTO,Service,ValueObject}/
+└── Transaction/{DTO,Service}/
+schema/mysql.sql
 examples/
- ├── bootstrap.php
- ├── auth.php
- ├── order.php
- ├── kiosk.php
- ├── facade_kiosk.php
- ├── wallet.php
- ├── facade_wallet.php
- ├── transaction.php
- ├── return_url.php
- └── webhook.php
 ```
-
 
 ---
 
@@ -151,11 +97,11 @@ See [examples](./examples):
 ### Bootstrap
 
 ```php
-use Maatify\Paymob\Http\ApiClient;
-use Maatify\Paymob\Http\ApiClientInterface;
-use Maatify\Paymob\Http\CurlApiClient;
-use Maatify\Paymob\Http\GuzzleApiClient;
-use Maatify\Paymob\DTO\PaymobConfigDTO;
+use Maatify\Paymob\Adapter\ApiClient;
+use Maatify\Paymob\Adapter\ApiClientInterface;
+use Maatify\Paymob\Adapter\CurlApiClient;
+use Maatify\Paymob\Adapter\GuzzleApiClient;
+use Maatify\Paymob\Config\PaymobConfig;
 use Monolog\Handler\StreamHandler;
 use Monolog\Logger;
 use Psr\Log\LogLevel;
@@ -166,9 +112,10 @@ $dotenv->safeLoad();
 final readonly class PaymobExampleBootstrap
 {
     public function __construct(
-        public PaymobConfigDTO $config,
+        public PaymobConfig $config,
         public ApiClientInterface $client,
         public Logger $logger,
+        public \Maatify\SharedCommon\Contracts\ClockInterface $clock,
     )
     {
     }
@@ -189,12 +136,9 @@ echo "Token: {$tokenDto->token}\n";
 ### 🛒 Create Order
 
 ```php
-$items = new OrderItemsDTO(
-    new OrderItemDTO('T-shirt', 5000, 1),
-    new OrderItemDTO('Shoes', 10000, 1, 'Running Shoes')
-);
+$items = [new OrderItem('T-shirt', 5000, 1), new OrderItem('Shoes', 10000, 1, 'Running Shoes')];
 
-$request = new OrderRequestDTO(
+$request = new CreateOrderCommand(
     amountCents: 15000,
     currency: CurrencyEnum::EGP,
     merchantOrderId: 'ORD-' . uniqid(),
@@ -206,7 +150,7 @@ $response = $orderService->createOrder($request);
 ---
 ### 💳 Generate Payment Key
 ```php
-$billing = new BillingDataDTO(
+$billing = new BillingData(
     firstName: 'Mohamed',
     lastName: 'Abdulalim',
     email: 'mohamed@example.com',
@@ -221,7 +165,7 @@ $billing = new BillingDataDTO(
     state: 'EG'          //<---- Optional
 );
 
-$paymentKeyRequest = new PaymentKeyRequestDTO(
+$paymentKeyRequest = new GeneratePaymentKeyCommand(
     orderId: $orderResponse->id,
     integrationId: $bootstrap->config->integrationIdCard,
     amountCents: $orderResponse->amountCents,
@@ -245,24 +189,20 @@ This requires using the **Kiosk integration ID** when generating the payment key
 ### Example
 
 ```php
-use Maatify\Paymob\DTO\Order\OrderItemDTO;
-use Maatify\Paymob\DTO\Order\OrderItemsDTO;
-use Maatify\Paymob\DTO\Order\OrderRequestDTO;
-use Maatify\Paymob\DTO\Payment\BillingDataDTO;
-use Maatify\Paymob\DTO\Payment\PaymentKeyRequestDTO;
-use Maatify\Paymob\DTO\Payment\KioskPaymentRequestDTO;
-use Maatify\Paymob\Service\OrderService;
-use Maatify\Paymob\Service\PaymentKeyService;
-use Maatify\Paymob\Service\KioskPaymentService;
+use Maatify\Paymob\Order\ValueObject\OrderItem;
+use Maatify\Paymob\Order\Command\CreateOrderCommand;
+use Maatify\Paymob\Payment\ValueObject\BillingData;
+use Maatify\Paymob\Payment\Command\GeneratePaymentKeyCommand;
+use Maatify\Paymob\Payment\Command\InitiateKioskPaymentCommand;
+use Maatify\Paymob\Order\Service\OrderService;
+use Maatify\Paymob\Payment\Service\PaymentKeyService;
+use Maatify\Paymob\Payment\Service\KioskPaymentService;
 use Maatify\Paymob\Enum\CurrencyEnum;
 
 // Step 1: Create order
-$items = new OrderItemsDTO(
-    new OrderItemDTO('T-shirt', 5000, 1),
-    new OrderItemDTO('Shoes', 10000, 1, 'Running Shoes')
-);
+$items = [new OrderItem('T-shirt', 5000, 1), new OrderItem('Shoes', 10000, 1, 'Running Shoes')];
 
-$orderRequest = new OrderRequestDTO(
+$orderRequest = new CreateOrderCommand(
     amountCents: 15000,
     currency: CurrencyEnum::EGP,
     merchantOrderId: 'ORD-' . uniqid(),
@@ -273,7 +213,7 @@ $orderResponse = $orderService->createOrder($orderRequest);
 echo "✅ Order created. ID = {$orderResponse->id}\n";
 
 // Step 2: Billing data (NA allowed for kiosk)
-$billing = new BillingDataDTO(
+$billing = new BillingData(
     firstName: 'Mohamed',
     lastName: 'Abdulalim',
     email: 'mohamed@example.com',
@@ -289,7 +229,7 @@ $billing = new BillingDataDTO(
 );
 
 // Step 3: Generate payment key using Kiosk integration ID
-$paymentKeyRequest = new PaymentKeyRequestDTO(
+$paymentKeyRequest = new GeneratePaymentKeyCommand(
     orderId: $orderResponse->id,
     integrationId: $bootstrap->config->integrationIdKiosk,
     amountCents: $orderResponse->amountCents,
@@ -301,7 +241,7 @@ $paymentKeyResponse = $paymentKeyService->generate($paymentKeyRequest);
 echo "✅ Payment key generated. Token = {$paymentKeyResponse->token}\n";
 
 // Step 4: Pay via Kiosk
-$kioskRequest = new KioskPaymentRequestDTO($paymentKeyResponse->token);
+$kioskRequest = new InitiateKioskPaymentCommand($paymentKeyResponse->token);
 $kioskResponse = $kioskService->pay($kioskRequest);
 
 echo "✅ Kiosk Payment initiated successfully:\n";
@@ -324,21 +264,18 @@ echo "Status Message    : {$kioskResponse->statusMessage}\n";
 
 ```php
 use Maatify\Paymob\Facade\PaymobFacade;
-use Maatify\Paymob\Repository\InMemoryTokenRepository;
+use Maatify\Paymob\Authentication\Repository\InMemoryTokenRepository;
 
-$items = new OrderItemsDTO(
-    new OrderItemDTO('T-shirt', 5000, 1),
-    new OrderItemDTO('Shoes', 10000, 1, 'Running Shoes')
-);
+$items = [new OrderItem('T-shirt', 5000, 1), new OrderItem('Shoes', 10000, 1, 'Running Shoes')];
 
-$orderRequest = new OrderRequestDTO(
+$orderRequest = new CreateOrderCommand(
     amountCents: 15000,
     currency: CurrencyEnum::EGP,
     merchantOrderId: 'ORD-' . uniqid(),
     items: $items
 );
 
-$billing = new BillingDataDTO(
+$billing = new BillingData(
     firstName: 'Mohamed',
     lastName: 'Abdulalim',
     email: 'mohamed@example.com',
@@ -357,6 +294,7 @@ $facade = new PaymobFacade(
     config : $bootstrap->config,
     http   : $bootstrap->client,
     repo   : new InMemoryTokenRepository(),
+    clock  : $bootstrap->clock,
     logger : $bootstrap->logger
 );
 
@@ -376,10 +314,10 @@ Use WalletPaymentService to initiate a payment via mobile wallets (e.g., Vodafon
 This requires using the Wallet integration ID when generating the payment key.
 ### Example
 ```php
-use Maatify\Paymob\DTO\Payment\WalletPaymentRequestDTO;
-use Maatify\Paymob\Service\WalletPaymentService;
+use Maatify\Paymob\Payment\Command\InitiateWalletPaymentCommand;
+use Maatify\Paymob\Payment\Service\WalletPaymentService;
 
-$paymentKeyRequest = new PaymentKeyRequestDTO(
+$paymentKeyRequest = new GeneratePaymentKeyCommand(
     orderId: $orderResponse->id,
     integrationId: $bootstrap->config->integrationIdWallet,
     amountCents: $orderResponse->amountCents,
@@ -389,9 +327,9 @@ $paymentKeyRequest = new PaymentKeyRequestDTO(
 
 $paymentKeyResponse = $paymentKeyService->generate($paymentKeyRequest);
 
-$walletRequest = new WalletPaymentRequestDTO(
+$walletRequest = new InitiateWalletPaymentCommand(
     paymentToken: $paymentKeyResponse->token,
-    walletNumber: '01000000000' // رقم محفظة العميل
+    phoneNumber: '01000000000' // verification input supplied by the Host
 );
 
 $walletResponse = $walletService->pay($walletRequest);
@@ -399,7 +337,6 @@ $walletResponse = $walletService->pay($walletRequest);
 echo "✅ Wallet Payment initiated successfully:\n";
 echo "Transaction ID    : {$walletResponse->transactionId}\n";
 echo "Order ID          : {$walletResponse->orderId}\n";
-echo "Payment Status    : {$walletResponse->paymentStatus}\n";
 echo "Status Message    : {$walletResponse->statusMessage}\n";
 echo "Redirect URL      : {$walletResponse->redirectUrl}\n";
 
@@ -409,26 +346,22 @@ echo "Redirect URL      : {$walletResponse->redirectUrl}\n";
 ### 📱 Facade: Pay via Wallet (One Call)
 ```php
 use Maatify\Paymob\Facade\PaymobFacade;
-use Maatify\Paymob\Repository\InMemoryTokenRepository;
-use Maatify\Paymob\DTO\Order\OrderItemDTO;
-use Maatify\Paymob\DTO\Order\OrderItemsDTO;
-use Maatify\Paymob\DTO\Order\OrderRequestDTO;
-use Maatify\Paymob\DTO\Payment\BillingDataDTO;
+use Maatify\Paymob\Authentication\Repository\InMemoryTokenRepository;
+use Maatify\Paymob\Order\ValueObject\OrderItem;
+use Maatify\Paymob\Order\Command\CreateOrderCommand;
+use Maatify\Paymob\Payment\ValueObject\BillingData;
 use Maatify\Paymob\Enum\CurrencyEnum;
 
-$items = new OrderItemsDTO(
-    new OrderItemDTO('Headphones', 7000, 1),
-    new OrderItemDTO('Charger', 3000, 1, 'Fast Charger')
-);
+$items = [new OrderItem('Headphones', 7000, 1), new OrderItem('Charger', 3000, 1, 'Fast Charger')];
 
-$orderRequest = new OrderRequestDTO(
+$orderRequest = new CreateOrderCommand(
     amountCents: 10000,
     currency: CurrencyEnum::EGP,
     merchantOrderId: 'ORD-' . uniqid(),
     items: $items
 );
 
-$billing = new BillingDataDTO(
+$billing = new BillingData(
     firstName: 'Mohamed',
     lastName: 'Abdulalim',
     email: 'mohamed@example.com',
@@ -443,6 +376,7 @@ $facade = new PaymobFacade(
     config : $bootstrap->config,
     http   : $bootstrap->client,
     repo   : new InMemoryTokenRepository(),
+    clock  : $bootstrap->clock,
     logger : $bootstrap->logger
 );
 
@@ -450,7 +384,7 @@ $result = $facade->payViaWallet($orderRequest, $billing, walletNumber: '01000000
 
 echo "✅ Order ID        : {$result->order->id}\n";
 echo "✅ Transaction ID  : {$result->wallet->transactionId}\n";
-echo "✅ Payment Status  : {$result->wallet->paymentStatus}\n";
+echo "✅ Payment Status  : {$result->wallet->statusMessage}\n";
 echo "✅ Redirect URL    : {$result->wallet->redirectUrl}\n";
 
 ```
@@ -462,17 +396,14 @@ This endpoint is useful for verifying payments, checking status, and reconciling
 
 Example
 ```php
-use Maatify\Paymob\Service\TransactionService;
-use Maatify\Paymob\DTO\Transaction\TransactionResponseDTO;
+use Maatify\Paymob\Transaction\Service\TransactionService;
+use Maatify\Paymob\Transaction\DTO\TransactionResponseDTO;
 
-$transactionService = new TransactionService(
-    http: $bootstrap->client,
-    auth: $authService
-);
+$transactionService = new TransactionService($bootstrap->client, $authService);
 
 // Fetch transaction details by ID
 $transactionId = 344212847;
-$transaction = $transactionService->getById($transactionId);
+$transaction = $transactionService->getTransaction($transactionId);
 
 echo "✅ Transaction fetched successfully:\n";
 echo "Transaction ID  : {$transaction->id}\n";
@@ -496,7 +427,7 @@ For a Transaction Processed callback, the JSON request body contains the transac
 
 Example
 ```php
-use Maatify\Paymob\Webhook\WebhookValidator;
+use Maatify\Paymob\Callback\Service\WebhookValidator;
 use Maatify\Paymob\Exception\WebhookException;
 
 $validator = new WebhookValidator($bootstrap->config);
@@ -527,7 +458,7 @@ try {
 The existing [Return URL example](./examples/return_url.php) handles Paymob's GET redirect with query parameters and an HMAC:
 
 ```php
-use Maatify\Paymob\Service\ReturnUrlHandler;
+use Maatify\Paymob\Callback\Service\ReturnUrlHandler;
 
 $handler = new ReturnUrlHandler($bootstrap->config);
 $response = $handler->parse($_GET);
@@ -545,7 +476,7 @@ The Transaction Response Callback is for customer-facing result and redirect han
 ## 🔥 Error Handling
 
 All SDK calls may throw typed exceptions.
-Every exception extends from `PaymobException`, making error handling consistent.
+Package exceptions implement `PaymobExceptionInterface`, the package-wide catch boundary, and use the `maatify/exceptions` base.
 
 ```php
 try {
@@ -553,6 +484,9 @@ try {
 } catch (OrderException $e) {
     echo "❌ Order error: " . $e->getMessage();
     print_r($e->getResponse());
+} catch (\Maatify\Paymob\Exception\PaymobExceptionInterface $e) {
+    // Package-wide fallback: this marker is the stable catch boundary.
+    echo "❌ Paymob SDK error: " . $e->getMessage();
 }
 ```
 
@@ -561,17 +495,19 @@ try {
 ## ⚡ Token Repository Implementations
 
 * **InMemoryTokenRepository**: Stores token in runtime memory (default).
-* **FileTokenRepository** (coming soon).
-* **DB/RedisTokenRepository** (planned).
+* **FileTokenRepository**: scoped JSON files with locking and atomic replacement.
+* **MySqlTokenRepository**: optional MySQL/MariaDB implementation; consumer repositories may use other storage.
+
+## Optional Runtime Prerequisites
+
+PHP `^8.4` and `ext-curl` are mandatory. The default `ApiClient` selects cURL. Guzzle is optional and requires `guzzlehttp/guzzle ^7.0`. The built-in MySQL/MariaDB repository is optional and requires `ext-pdo`, `ext-pdo_mysql`, and a Host-provided PDO using the MySQL driver. Custom `TokenRepositoryInterface` implementations do not require PDO/MySQL. See [PAYMOB_PACKAGE_REFERENCE.md](./PAYMOB_PACKAGE_REFERENCE.md) for the implemented API and failure contract.
 
 ---
 
 ## 🚧 Roadmap
 
-* [ ] File/DB/Redis token repositories
-* [ ] Full exception mapping (all Paymob error codes)
+* [ ] Stable release qualification
 
 ---
 
-📌 **Note**: This SDK is under active development (v0.x).
-Expect breaking changes until stable v1.0 release.
+📌 **Note**: This package is Pre-Stable. See [PAYMOB_PACKAGE_REFERENCE.md](./PAYMOB_PACKAGE_REFERENCE.md) for the implemented Runtime API and construction contract.

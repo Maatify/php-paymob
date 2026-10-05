@@ -21,14 +21,14 @@ declare(strict_types=1);
 /** @var PaymobExampleBootstrap $bootstrap */
 $bootstrap = require __DIR__ . '/bootstrap.php';
 
-use Maatify\Paymob\DTO\Order\OrderItemDTO;
-use Maatify\Paymob\DTO\Order\OrderItemsDTO;
-use Maatify\Paymob\DTO\Order\OrderRequestDTO;
-use Maatify\Paymob\DTO\Payment\BillingDataDTO;
+use Maatify\Paymob\Order\ValueObject\OrderItem;
+use Maatify\Paymob\Order\DTO\OrderItemCollectionDTO;
+use Maatify\Paymob\Order\Command\CreateOrderCommand;
+use Maatify\Paymob\Payment\ValueObject\BillingData;
 use Maatify\Paymob\Enum\CurrencyEnum;
-use Maatify\Paymob\Exception\{ApiException, AuthException, NetworkException, OrderException, TransactionException};
+use Maatify\Paymob\Exception\{ApiException, AuthException, NetworkException, OrderException, PaymobExceptionInterface, TransactionException};
 use Maatify\Paymob\Facade\PaymobFacade;
-use Maatify\Paymob\Repository\InMemoryTokenRepository;
+use Maatify\Paymob\Authentication\Repository\InMemoryTokenRepository;
 
 $repo = new InMemoryTokenRepository();
 // Facade init
@@ -36,17 +36,17 @@ $facade = new PaymobFacade(
     config : $bootstrap->config,
     http   : $bootstrap->client,
     repo   : $repo,
+    clock  : $bootstrap->clock,
     logger : $bootstrap->logger,
 );
 try {
     // 1. Order items
-    $items = new OrderItemsDTO(
-        new OrderItemDTO('T-shirt', 5000, 1),
-        new OrderItemDTO('Shoes', 10000, 1, 'Running Shoes')
-    );
+    $items = [
+        new OrderItem('T-shirt', 5000, 1),
+        new OrderItem('Shoes', 10000, 1, 'Running Shoes')];
 
     // 2. Order request
-    $orderRequest = new OrderRequestDTO(
+    $orderRequest = new CreateOrderCommand(
         amountCents    : 15000,
         currency       : CurrencyEnum::EGP,
         merchantOrderId: 'ORD-' . uniqid(),
@@ -54,7 +54,7 @@ try {
     );
 
     // 3. Billing info
-    $billing = new BillingDataDTO(
+    $billing = new BillingData(
         firstName  : 'Mohamed',
         lastName   : 'Abdulalim',
         email      : 'mohamed@example.com',
@@ -85,6 +85,8 @@ try {
 } catch (AuthException|OrderException|TransactionException|NetworkException|ApiException $e) {
     echo "❌ SDK error: " . $e->getMessage() . PHP_EOL;
     print_r($e->getResponse());
+} catch (PaymobExceptionInterface $e) {
+    echo "❌ Paymob SDK error: " . $e->getMessage() . PHP_EOL;
 } catch (Throwable $e) {
     echo "❌ Unexpected error: " . $e->getMessage();
 }

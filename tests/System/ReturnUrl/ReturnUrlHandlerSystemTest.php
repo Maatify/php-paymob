@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace Maatify\Paymob\Tests\System\ReturnUrl;
 
-use Maatify\Paymob\DTO\PaymobConfigDTO;
-use Maatify\Paymob\DTO\Webhook\ReturnUrlResponseDTO;
-use Maatify\Paymob\Service\ReturnUrlHandler;
+use Maatify\Paymob\Config\PaymobConfig;
+use Maatify\Paymob\Callback\DTO\ReturnUrlResponseDTO;
+use Maatify\Paymob\Callback\Service\ReturnUrlHandler;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
@@ -180,6 +180,31 @@ final class ReturnUrlHandlerSystemTest extends TestCase
         self::assertTrue($result->pending);
     }
 
+    public function testCorrectlySignedNonCanonicalNumericValuesAreRejected(): void
+    {
+        foreach (['id' => ['01', '0', '-1', '+1', ' 1', '1.0', '1e2', '999999999999999999999999999999'],
+            'order' => ['01', '0', '-1', '+1', ' 1', '1.0', '1e2'],
+            'amount_cents' => ['01', '0', '-1', '+1', ' 1', '1.0', '1e2']] as $field => $values) {
+            foreach ($values as $value) {
+                $query = $this->validQuery();
+                $query[$field] = $value;
+                $query['hmac'] = $this->signQuery($query);
+                $this->assertRejected($query);
+            }
+        }
+    }
+
+    private function signQuery(array $query): string
+    {
+        $fields = ['amount_cents', 'created_at', 'currency', 'error_occured', 'has_parent_transaction', 'id',
+            'integration_id', 'is_3d_secure', 'is_auth', 'is_capture', 'is_refunded', 'is_standalone_payment',
+            'is_voided', 'order', 'owner', 'pending', 'source_data_pan', 'source_data_sub_type',
+            'source_data_type', 'success'];
+        $values = array_map(static fn(string $field): string => (string)($field === 'order'
+            ? ($query['order'] ?? $query['order_id']) : $query[$field]), $fields);
+        return hash_hmac('sha512', implode('', $values), self::HMAC_SECRET);
+    }
+
     #[DataProvider('distinctSignedFields')]
     public function testTamperingWithFlatOrderOrNormalizedSourceDataIsRejected(string $field): void
     {
@@ -295,7 +320,7 @@ final class ReturnUrlHandlerSystemTest extends TestCase
 
     public function testEmptyConfiguredHmacSecretIsRejected(): void
     {
-        $this->expectException(RuntimeException::class);
+        $this->expectException(\InvalidArgumentException::class);
         $this->expectExceptionMessage('HMAC secret must not be empty');
 
         $this->handler('')->parse($this->validQuery());
@@ -332,7 +357,7 @@ final class ReturnUrlHandlerSystemTest extends TestCase
 
     private function handler(string $hmacSecret = self::HMAC_SECRET): ReturnUrlHandler
     {
-        return new ReturnUrlHandler(new PaymobConfigDTO(
+        return new ReturnUrlHandler(new PaymobConfig(
             apiKey: 'synthetic-api-key',
             integrationIdCard: 1,
             integrationIdKiosk: 2,
