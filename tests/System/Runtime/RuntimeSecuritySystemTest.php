@@ -166,6 +166,58 @@ final class RuntimeSecuritySystemTest extends TestCase
         self::assertSame($kioskIntent, $kioskCommand->toArray());
     }
 
+    public function testOrderServiceMalformedRequiredResponseThrowsPackageApiExceptionWithEvidence(): void
+    {
+        $config = new PaymobConfig('key', 'hmac', 1, 2, 3);
+        $response = ['id' => 'invalid-id', 'created_at' => 'now', 'currency' => 'EGP', 'amount_cents' => 100];
+        $api = new QueueApiClient();
+        $api->postQueue = [$response];
+        $service = new OrderService($api, new AuthService($api, $config, $this->repoWithCachedToken($config), new FixedTestClock(1000)));
+
+        try {
+            $service->createOrder(new CreateOrderCommand(100, CurrencyEnum::EGP, 'order-ref', []));
+            self::fail('Malformed required Order response must throw ApiException.');
+        } catch (ApiException $exception) {
+            self::assertSame($response, $exception->getResponse());
+            self::assertNull($exception->getProviderStatusCode());
+        }
+    }
+
+    public function testOrderServiceUnsupportedCurrencyWrapsOriginalInvalidArgumentException(): void
+    {
+        $config = new PaymobConfig('key', 'hmac', 1, 2, 3);
+        $response = ['id' => 42, 'created_at' => 'now', 'currency' => 'UNSUPPORTED', 'amount_cents' => 100];
+        $api = new QueueApiClient();
+        $api->postQueue = [$response];
+        $service = new OrderService($api, new AuthService($api, $config, $this->repoWithCachedToken($config), new FixedTestClock(1000)));
+
+        try {
+            $service->createOrder(new CreateOrderCommand(100, CurrencyEnum::EGP, 'order-ref', []));
+            self::fail('Unsupported Order currency must throw ApiException.');
+        } catch (ApiException $exception) {
+            self::assertSame($response, $exception->getResponse());
+            self::assertInstanceOf(\InvalidArgumentException::class, $exception->getPrevious());
+        }
+    }
+
+    public function testPaymentKeyServiceMissingTokenThrowsPackageApiExceptionWithEvidence(): void
+    {
+        $config = new PaymobConfig('key', 'hmac', 1, 2, 3);
+        $response = ['order' => 42, 'status' => 'issued'];
+        $api = new QueueApiClient();
+        $api->postQueue = [$response];
+        $service = new PaymentKeyService($api, new AuthService($api, $config, $this->repoWithCachedToken($config), new FixedTestClock(1000)));
+        $command = new GeneratePaymentKeyCommand(42, 1, 100, CurrencyEnum::EGP, new BillingData('First', 'Last', 'first@example.test', '01000000000'));
+
+        try {
+            $service->generate($command);
+            self::fail('Payment Key response without a token must throw ApiException.');
+        } catch (ApiException $exception) {
+            self::assertSame($response, $exception->getResponse());
+            self::assertNull($exception->getProviderStatusCode());
+        }
+    }
+
     public function testProviderDiagnosticSnapshotsRemainAccessibleButAreExcludedFromJson(): void
     {
         $sentinel = ['__raw_provider_sentinel__' => 'must-not-be-json-serialized'];

@@ -6,6 +6,7 @@ namespace Maatify\Paymob\Payment\Service;
 
 use Maatify\Paymob\Adapter\ApiClientInterface;
 use Maatify\Paymob\Authentication\Service\AuthService;
+use Maatify\Paymob\Exception\ApiException;
 use Maatify\Paymob\Exception\UnauthorizedException;
 use Maatify\Paymob\Payment\Command\GeneratePaymentKeyCommand;
 use Maatify\Paymob\Payment\DTO\PaymentKeyResponseDTO;

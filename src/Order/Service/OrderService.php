@@ -6,6 +6,7 @@ namespace Maatify\Paymob\Order\Service;
 
 use Maatify\Paymob\Adapter\ApiClientInterface;
 use Maatify\Paymob\Authentication\Service\AuthService;
+use Maatify\Paymob\Exception\ApiException;
 use Maatify\Paymob\Exception\UnauthorizedException;
 use Maatify\Paymob\Order\Command\CreateOrderCommand;
 use Maatify\Paymob\Order\DTO\OrderItemCollectionDTO;
