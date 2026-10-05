@@ -63,5 +63,22 @@ final readonly class KioskPaymentResponseDTO implements \JsonSerializable
             row            : $response
         );
     }
-    public function jsonSerialize(): array { return get_object_vars($this); }
+    /** Returns typed Kiosk result fields without the retained provider response row. */
+    public function jsonSerialize(): array
+    {
+        return [
+            'transactionId' => $this->transactionId,
+            'orderId' => $this->orderId,
+            'merchantOrderId' => $this->merchantOrderId,
+            'amountCents' => $this->amountCents,
+            'currency' => $this->currency,
+            'pending' => $this->pending,
+            'success' => $this->success,
+            'billReference' => $this->billReference,
+            'statusMessage' => $this->statusMessage,
+            'paymentStatus' => $this->paymentStatus,
+            'createdAt' => $this->createdAt,
+            'updatedAt' => $this->updatedAt,
+        ];
+    }
 }

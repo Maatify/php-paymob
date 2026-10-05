@@ -47,5 +47,20 @@ final readonly class WebhookPayloadDTO implements \JsonSerializable
             raw          : $data
         );
     }
-    public function jsonSerialize(): array { return get_object_vars($this); }
+    /** Returns the typed callback snapshot, including its typed HMAC, without the raw payload. */
+    public function jsonSerialize(): array
+    {
+        return [
+            'transactionId' => $this->transactionId,
+            'orderId' => $this->orderId,
+            'amountCents' => $this->amountCents,
+            'currency' => $this->currency,
+            'success' => $this->success,
+            'pending' => $this->pending,
+            'paymentMethod' => $this->paymentMethod,
+            'subType' => $this->subType,
+            'maskedPan' => $this->maskedPan,
+            'hmac' => $this->hmac,
+        ];
+    }
 }

@@ -16,6 +16,7 @@ use Maatify\Paymob\Authentication\Repository\InMemoryTokenRepository;
 use Maatify\Paymob\Authentication\Repository\Pdo\MySqlTokenRepository;
 use Maatify\Paymob\Authentication\Service\AuthService;
 use Maatify\Paymob\Authentication\ValueObject\TokenScope;
+use Maatify\Paymob\Callback\DTO\WebhookPayloadDTO;
 use Maatify\Paymob\Config\PaymobConfig;
 use Maatify\Paymob\Exception\ApiException;
 use Maatify\Paymob\Exception\NetworkException;
@@ -26,15 +27,21 @@ use Maatify\Paymob\Exception\ServiceUnavailableException;
 use Maatify\Paymob\Exception\TokenStorageException;
 use Maatify\Paymob\Exception\UnauthorizedException;
 use Maatify\Paymob\Order\Command\CreateOrderCommand;
+use Maatify\Paymob\Order\DTO\OrderResponseDTO;
 use Maatify\Paymob\Order\Service\OrderService;
 use Maatify\Paymob\Enum\CurrencyEnum;
 use Maatify\Paymob\Payment\Command\GeneratePaymentKeyCommand;
 use Maatify\Paymob\Payment\Command\InitiateKioskPaymentCommand;
 use Maatify\Paymob\Payment\Command\InitiateWalletPaymentCommand;
+use Maatify\Paymob\Payment\DTO\KioskFlowResultDTO;
+use Maatify\Paymob\Payment\DTO\KioskPaymentResponseDTO;
 use Maatify\Paymob\Payment\Service\PaymentKeyService;
 use Maatify\Paymob\Payment\Service\KioskPaymentService;
 use Maatify\Paymob\Payment\Service\WalletPaymentService;
+use Maatify\Paymob\Payment\DTO\WalletFlowResultDTO;
+use Maatify\Paymob\Payment\DTO\WalletPaymentResponseDTO;
 use Maatify\Paymob\Payment\ValueObject\BillingData;
+use Maatify\Paymob\Transaction\DTO\TransactionResponseDTO;
 use Maatify\SharedCommon\Contracts\ClockInterface;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
@@ -95,6 +102,78 @@ final class RuntimeSecuritySystemTest extends TestCase
             \Maatify\Paymob\Callback\DTO\WebhookPayloadDTO::class,
             \Maatify\Paymob\Callback\DTO\ReturnUrlResponseDTO::class,
         ] as $class) self::assertContains(\JsonSerializable::class, class_implements($class));
+    }
+
+    public function testProviderDiagnosticSnapshotsRemainAccessibleButAreExcludedFromJson(): void
+    {
+        $sentinel = ['__raw_provider_sentinel__' => 'must-not-be-json-serialized'];
+
+        $order = new OrderResponseDTO(1, '2026-10-05T12:00:00Z', CurrencyEnum::EGP, 500, 'order-1', row: $sentinel);
+        self::assertSame($sentinel, $order->row);
+        self::assertArrayNotHasKey('row', $order->jsonSerialize());
+        self::assertSame(1, $order->jsonSerialize()['id']);
+        $orderJson = json_encode($order, JSON_THROW_ON_ERROR);
+        self::assertStringNotContainsString('__raw_provider_sentinel__', $orderJson);
+        self::assertSame($sentinel, $order->row);
+
+        $kiosk = new KioskPaymentResponseDTO(10, 1, 'order-1', 500, CurrencyEnum::EGP, false, true, row: $sentinel);
+        self::assertSame($sentinel, $kiosk->row);
+        self::assertArrayNotHasKey('row', $kiosk->jsonSerialize());
+        self::assertSame(10, $kiosk->jsonSerialize()['transactionId']);
+        $kioskJson = json_encode($kiosk, JSON_THROW_ON_ERROR);
+        self::assertStringNotContainsString('__raw_provider_sentinel__', $kioskJson);
+        self::assertSame($sentinel, $kiosk->row);
+
+        $transaction = new TransactionResponseDTO(10, 1, 500, CurrencyEnum::EGP, true, false, true, false, false, true, false, raw: $sentinel);
+        self::assertSame($sentinel, $transaction->raw);
+        self::assertArrayNotHasKey('raw', $transaction->jsonSerialize());
+        self::assertSame(10, $transaction->jsonSerialize()['id']);
+        $transactionJson = json_encode($transaction, JSON_THROW_ON_ERROR);
+        self::assertStringNotContainsString('__raw_provider_sentinel__', $transactionJson);
+        self::assertSame($sentinel, $transaction->raw);
+
+        $webhook = new WebhookPayloadDTO(10, 1, 500, 'EGP', true, false, hmac: 'typed-hmac-sentinel', raw: $sentinel);
+        self::assertSame($sentinel, $webhook->raw);
+        self::assertArrayNotHasKey('raw', $webhook->jsonSerialize());
+        self::assertSame('typed-hmac-sentinel', $webhook->jsonSerialize()['hmac']);
+        $webhookJson = json_encode($webhook, JSON_THROW_ON_ERROR);
+        self::assertStringNotContainsString('__raw_provider_sentinel__', $webhookJson);
+        self::assertSame($sentinel, $webhook->raw);
+    }
+
+    public function testKioskFlowJsonDoesNotExposeNestedOrderOrKioskDiagnosticSnapshots(): void
+    {
+        $orderSentinel = ['__order_row_sentinel__' => 'private diagnostic'];
+        $kioskSentinel = ['__kiosk_row_sentinel__' => 'private diagnostic'];
+        $order = new OrderResponseDTO(1, '2026-10-05T12:00:00Z', CurrencyEnum::EGP, 500, 'order-1', row: $orderSentinel);
+        $kiosk = new KioskPaymentResponseDTO(10, 1, 'order-1', 500, CurrencyEnum::EGP, false, true, row: $kioskSentinel);
+        $flow = new KioskFlowResultDTO($order, $kiosk);
+
+        self::assertSame($orderSentinel, $flow->order->row);
+        self::assertSame($kioskSentinel, $flow->kiosk->row);
+        $json = json_encode($flow, JSON_THROW_ON_ERROR);
+        self::assertStringNotContainsString('__order_row_sentinel__', $json);
+        self::assertStringNotContainsString('__kiosk_row_sentinel__', $json);
+        $decoded = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
+        self::assertArrayNotHasKey('row', $decoded['order']);
+        self::assertArrayNotHasKey('row', $decoded['kiosk']);
+        self::assertSame($orderSentinel, $flow->order->row);
+        self::assertSame($kioskSentinel, $flow->kiosk->row);
+    }
+
+    public function testWalletFlowJsonDoesNotExposeNestedOrderDiagnosticSnapshot(): void
+    {
+        $orderSentinel = ['__wallet_order_row_sentinel__' => 'private diagnostic'];
+        $order = new OrderResponseDTO(1, '2026-10-05T12:00:00Z', CurrencyEnum::EGP, 500, 'order-1', row: $orderSentinel);
+        $wallet = new WalletPaymentResponseDTO(11, 1, 500, CurrencyEnum::EGP, true, false, '2026-10-05T12:00:00Z');
+        $flow = new WalletFlowResultDTO($order, $wallet);
+
+        self::assertSame($orderSentinel, $flow->order->row);
+        $json = json_encode($flow, JSON_THROW_ON_ERROR);
+        self::assertStringNotContainsString('__wallet_order_row_sentinel__', $json);
+        $decoded = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
+        self::assertArrayNotHasKey('row', $decoded['order']);
+        self::assertSame($orderSentinel, $flow->order->row);
     }
 
     public function testInMemoryTokensAreIsolatedByScope(): void

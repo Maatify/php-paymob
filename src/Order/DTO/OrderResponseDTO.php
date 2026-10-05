@@ -27,5 +27,16 @@ final readonly class OrderResponseDTO implements \JsonSerializable
         public ?OrderItemCollectionDTO $items = null,
         public ?array $row = null
     ) {}
-    public function jsonSerialize(): array { return get_object_vars($this); }
+    /** Returns the typed order snapshot without its retained provider response row. */
+    public function jsonSerialize(): array
+    {
+        return [
+            'id' => $this->id,
+            'createdAt' => $this->createdAt,
+            'currency' => $this->currency,
+            'amountCents' => $this->amountCents,
+            'merchantOrderId' => $this->merchantOrderId,
+            'items' => $this->items,
+        ];
+    }
 }

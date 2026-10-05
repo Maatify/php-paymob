@@ -214,6 +214,10 @@ Card/VPC Payment Key generation is supported using the configured Card integrati
 
 All package exceptions implement `PaymobExceptionInterface` and use the `maatify/exceptions` base. Named provider classifications include Unauthorized, Validation, Not Found, Rate Limit, Service Unavailable, Auth, Order, Transaction, and Webhook failures. `TokenStorageException`, `OptionalCapabilityUnavailableException`, and `ReturnUrlException` represent their named package boundaries.
 
+## DTO Diagnostic Snapshots and JSON
+
+Where present, `OrderResponseDTO::$row`, `KioskPaymentResponseDTO::$row`, `TransactionResponseDTO::$raw`, and `WebhookPayloadDTO::$raw` retain diagnostic provider or callback snapshots as publicly accessible PHP properties. These snapshots may contain sensitive data. Each DTO excludes its diagnostic snapshot from `JsonSerializable` output. Serializing `KioskFlowResultDTO` does not automatically expose its nested order or Kiosk snapshots; serializing `WalletFlowResultDTO` does not automatically expose its nested order snapshot. Consumers should inspect these properties deliberately and must not blindly log or routinely serialize them.
+
 ## Sensitive Data / Logging
 
 Do not log API keys, HMAC secrets, auth tokens, payment keys, wallet phone numbers, billing data, request payloads, raw provider response bodies, HMAC values, or traces containing arguments. Built-in transport logs are restricted to method, URI path, status, and exception class. Public token DTO serialization is an explicit consumer data contract, not permission to log it.

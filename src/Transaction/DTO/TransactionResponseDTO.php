@@ -92,5 +92,36 @@ final readonly class TransactionResponseDTO implements \JsonSerializable
             raw                : $data,
         );
     }
-    public function jsonSerialize(): array { return get_object_vars($this); }
+    /** Returns the typed transaction snapshot without its retained provider response. */
+    public function jsonSerialize(): array
+    {
+        return [
+            'id' => $this->id,
+            'orderId' => $this->orderId,
+            'amountCents' => $this->amountCents,
+            'currency' => $this->currency,
+            'success' => $this->success,
+            'pending' => $this->pending,
+            'isCaptured' => $this->isCaptured,
+            'isRefunded' => $this->isRefunded,
+            'isVoided' => $this->isVoided,
+            'is3DSecure' => $this->is3DSecure,
+            'isStandalonePayment' => $this->isStandalonePayment,
+            'integrationId' => $this->integrationId,
+            'profileId' => $this->profileId,
+            'merchantId' => $this->merchantId,
+            'merchantOrderId' => $this->merchantOrderId,
+            'paymentStatus' => $this->paymentStatus,
+            'statusMessage' => $this->statusMessage,
+            'createdAt' => $this->createdAt,
+            'updatedAt' => $this->updatedAt,
+            'sourceType' => $this->sourceType,
+            'sourceSubType' => $this->sourceSubType,
+            'redirectUrl' => $this->redirectUrl,
+            'refundedAmountCents' => $this->refundedAmountCents,
+            'capturedAmountCents' => $this->capturedAmountCents,
+            'items' => $this->items,
+            'billingData' => $this->billingData,
+        ];
+    }
 }
