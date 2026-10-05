@@ -33,9 +33,23 @@ final readonly class OrderService
             if (!isset($response[$field]) || get_debug_type($response[$field]) !== $type) throw new ApiException("Paymob order response has an invalid required field: {$field}.", null, $response);
         }
         if ($response['id'] <= 0 || $response['amount_cents'] <= 0) throw new ApiException('Paymob order response contains a non-positive identifier or amount.', null, $response);
+        if (array_key_exists('merchant_order_id', $response) && $response['merchant_order_id'] !== null
+            && !is_string($response['merchant_order_id'])) {
+            throw new ApiException('Paymob order response has an invalid merchant_order_id.', null, $response);
+        }
+        if (array_key_exists('items', $response)) {
+            if (!is_array($response['items'])) throw new ApiException('Paymob order response has invalid items.', null, $response);
+            foreach ($response['items'] as $item) {
+                if (!is_array($item)) throw new ApiException('Paymob order response contains a malformed item.', null, $response);
+            }
+        }
         try { $currency = CurrencyEnum::fromString($response['currency']); }
         catch (InvalidArgumentException $e) { throw new ApiException('Paymob order response contains an unsupported currency.', null, $response, $e); }
-        $items = isset($response['items']) && is_array($response['items']) ? OrderItemCollectionDTO::fromArray($response['items']) : null;
+        try {
+            $items = array_key_exists('items', $response) ? OrderItemCollectionDTO::fromArray($response['items']) : null;
+        } catch (ApiException $e) {
+            throw new ApiException('Paymob order response contains malformed items.', null, $response, $e);
+        }
         return new OrderResponseDTO($response['id'], $response['created_at'], $currency,
             $response['amount_cents'], $response['merchant_order_id'] ?? null, $items, $response);
     }

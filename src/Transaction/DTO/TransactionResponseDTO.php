@@ -58,6 +58,46 @@ final readonly class TransactionResponseDTO implements \JsonSerializable
         foreach (['success', 'pending', 'is_captured', 'is_refunded', 'is_voided', 'is_3d_secure', 'is_standalone_payment'] as $field) {
             if (!is_bool($data[$field])) throw new ApiException("Paymob Transaction response has an invalid boolean field: {$field}.", null, $data);
         }
+        foreach (['order', 'source_data', 'data', 'payment_key_claims'] as $field) {
+            if (array_key_exists($field, $data) && $data[$field] !== null && !is_array($data[$field])) {
+                throw new ApiException("Paymob Transaction response has an invalid {$field} object.", null, $data);
+            }
+        }
+        $order = $data['order'] ?? [];
+        $source = $data['source_data'] ?? [];
+        $details = $data['data'] ?? [];
+        $claims = $data['payment_key_claims'] ?? [];
+        if (array_key_exists('merchant', $order) && $order['merchant'] !== null && !is_array($order['merchant'])) {
+            throw new ApiException('Paymob Transaction response has an invalid order.merchant object.', null, $data);
+        }
+        $merchant = $order['merchant'] ?? [];
+        if (array_key_exists('billing_data', $claims) && $claims['billing_data'] !== null && !is_array($claims['billing_data'])) {
+            throw new ApiException('Paymob Transaction response has invalid billing_data.', null, $data);
+        }
+        $optionalTypes = [
+            'integration_id' => [$data['integration_id'] ?? null, 'int'],
+            'profile_id' => [$data['profile_id'] ?? null, 'int'],
+            'order.merchant.id' => [$merchant['id'] ?? null, 'int'],
+            'merchant_order_id' => [$order['merchant_order_id'] ?? null, 'string'],
+            'order.payment_status' => [$order['payment_status'] ?? null, 'string'],
+            'payment_status' => [$data['payment_status'] ?? null, 'string'],
+            'data.message' => [$details['message'] ?? null, 'string'],
+            'created_at' => [$data['created_at'] ?? null, 'string'],
+            'updated_at' => [$data['updated_at'] ?? null, 'string'],
+            'source_data.type' => [$source['type'] ?? null, 'string'],
+            'source_data.sub_type' => [$source['sub_type'] ?? null, 'string'],
+            'redirect_url' => [$data['redirect_url'] ?? null, 'string'],
+            'refunded_amount_cents' => [$data['refunded_amount_cents'] ?? null, 'int'],
+            'captured_amount' => [$data['captured_amount'] ?? null, 'int'],
+            'order.items' => [$order['items'] ?? null, 'array'],
+            'payment_key_claims.billing_data' => [$claims['billing_data'] ?? null, 'array'],
+            'order_id' => [$data['order_id'] ?? null, 'int'],
+        ];
+        foreach ($optionalTypes as $field => [$value, $type]) {
+            if ($value !== null && get_debug_type($value) !== $type) {
+                throw new ApiException("Paymob Transaction response has an invalid optional field: {$field}.", null, $data);
+            }
+        }
         $orderId = $data['order']['id'] ?? $data['order_id'] ?? null;
         if (!is_int($orderId) || $orderId <= 0) throw new ApiException('Paymob Transaction response is missing a valid order ID.', null, $data);
         $currency = CurrencyEnum::tryFrom($data['currency']);

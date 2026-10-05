@@ -46,6 +46,15 @@ final readonly class WalletPaymentResponseDTO implements \JsonSerializable
         }
         $currency = CurrencyEnum::tryFrom($response['currency']);
         if ($currency === null) throw new ApiException('Paymob Wallet response contains an unsupported currency.', null, $response);
+        $data = $response['data'] ?? null;
+        if ($data !== null && !is_array($data)) throw new ApiException('Paymob Wallet response has invalid data.', null, $response);
+        foreach ([
+            'updated_at' => [$response['updated_at'] ?? null, 'string'],
+            'redirect_url' => [$response['redirect_url'] ?? null, 'string'],
+            'data.message' => [$data['message'] ?? null, 'string'],
+        ] as $field => [$value, $type]) {
+            if ($value !== null && get_debug_type($value) !== $type) throw new ApiException("Paymob Wallet response has an invalid optional field: {$field}.", null, $response);
+        }
         return new self(
             transactionId: (int)$response['id'],
             orderId      : $response['order']['id'],

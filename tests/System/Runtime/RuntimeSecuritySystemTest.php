@@ -219,6 +219,67 @@ final class RuntimeSecuritySystemTest extends TestCase
         }
     }
 
+    public function testOrderServiceRejectsMalformedOptionalProviderFieldsWithFullEvidence(): void
+    {
+        $config = new PaymobConfig('key', 'hmac', 1, 2, 3);
+        foreach ([
+            ['id' => 42, 'created_at' => 'now', 'currency' => 'EGP', 'amount_cents' => 100, 'merchant_order_id' => 123],
+            ['id' => 42, 'created_at' => 'now', 'currency' => 'EGP', 'amount_cents' => 100, 'items' => [['name' => 'ok'], 'bad-row']],
+        ] as $response) {
+            $api = new QueueApiClient();
+            $api->postQueue = [$response];
+            $service = new OrderService($api, new AuthService($api, $config, $this->repoWithCachedToken($config), new FixedTestClock(1000)));
+            try {
+                $service->createOrder(new CreateOrderCommand(100, CurrencyEnum::EGP, 'order-ref', []));
+                self::fail('Malformed optional Order response must throw ApiException.');
+            } catch (ApiException $exception) {
+                self::assertSame($response, $exception->getResponse());
+            }
+        }
+    }
+
+    public function testKioskMalformedOptionalProviderFieldThrowsApiExceptionWithEvidence(): void
+    {
+        $response = ['id' => 10, 'amount_cents' => 100, 'currency' => 'EGP', 'pending' => false, 'success' => true,
+            'order' => ['id' => 5, 'merchant_order_id' => 'ref'], 'data' => ['message' => []]];
+        try {
+            KioskPaymentResponseDTO::fromArray($response);
+            self::fail('Malformed Kiosk optional field must throw ApiException.');
+        } catch (ApiException $exception) {
+            self::assertSame($response, $exception->getResponse());
+        }
+    }
+
+    public function testWalletMalformedOptionalProviderFieldThrowsApiExceptionWithEvidence(): void
+    {
+        $response = ['id' => 10, 'amount_cents' => 100, 'currency' => 'EGP', 'success' => true, 'pending' => false,
+            'created_at' => 'now', 'order' => ['id' => 5], 'redirect_url' => ['bad']];
+        try {
+            WalletPaymentResponseDTO::fromArray($response);
+            self::fail('Malformed Wallet optional field must throw ApiException.');
+        } catch (ApiException $exception) {
+            self::assertSame($response, $exception->getResponse());
+        }
+    }
+
+    public function testTransactionMalformedOptionalProviderFieldsThrowApiExceptionWithEvidence(): void
+    {
+        $base = ['id' => 10, 'order_id' => 5, 'amount_cents' => 100, 'currency' => 'EGP', 'success' => true,
+            'pending' => false, 'is_captured' => false, 'is_refunded' => false, 'is_voided' => false,
+            'is_3d_secure' => false, 'is_standalone_payment' => true];
+        foreach ([
+            [...$base, 'integration_id' => '12'],
+            [...$base, 'order' => ['id' => 5, 'items' => 'bad-shape']],
+        ] as $response) {
+            try {
+                TransactionResponseDTO::fromArray($response);
+                self::fail('Malformed Transaction optional field must throw ApiException.');
+            } catch (ApiException $exception) {
+                self::assertSame($response, $exception->getResponse());
+            }
+        }
+    }
+
     public function testProviderDiagnosticSnapshotsRemainAccessibleButAreExcludedFromJson(): void
     {
         $sentinel = ['__raw_provider_sentinel__' => 'must-not-be-json-serialized'];
