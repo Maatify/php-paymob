@@ -791,7 +791,7 @@ final class SemanticSanitizer
         }
 
         return (bool)preg_match(
-            '/(^|_)(token|api_key|secret|hmac|password|nonce|signature|authorization|credential|otp|mpin|pin|pan|card_number|cvv|cvc|tax_id|vat_number|national_id|commercial_register|account_number)(_|$)/i',
+            '/(^|_)(token|api_key|secret|client_secret|hmac|password|nonce|signature|authorization|credential|otp|mpin|pin|pan|card_number|cvv|cvc|tax_id|vat_number|national_id|commercial_register|account_number)(_|$)/i',
             $key,
         );
     }
@@ -813,6 +813,7 @@ final class SemanticSanitizer
     private function isPrivateReferenceKey(string $key): bool
     {
         return in_array(strtolower($key), [
+            'special_reference',
             'merchant_order_id',
             'other_endpoint_reference',
             'mer_txn_ref',
@@ -830,7 +831,7 @@ final class SemanticSanitizer
 
     private function isUrlKey(string $key): bool
     {
-        return (bool)preg_match('/(^|_)(redirect|iframe_redirection|return|callback|order|checkout)_?url$/i', $key);
+        return (bool)preg_match('/(^|_)(redirect|iframe_redirection|return|callback|notification|order|checkout)_?url$/i', $key);
     }
 
     private function isEmailKey(string $key): bool

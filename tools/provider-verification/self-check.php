@@ -286,7 +286,7 @@ try {
         $sendMethod,
     );
     $classifyPosition = $sendMethodMatch === 1
-        ? strpos($sendMethod[1], '$stage = $this->classifyAttemptStage($url, $requestShape);')
+        ? strpos($sendMethod[1], '$stage = $this->attemptStageClassifier->classify($url, $requestShape, $method, $headers);')
         : false;
     $curlInitPosition = $sendMethodMatch === 1 ? strpos($sendMethod[1], '$curl = curl_init($url);') : false;
     $sendExecPosition = $sendMethodMatch === 1
@@ -825,6 +825,105 @@ JSON;
     verify(file_put_contents($configurationPath, $configuration) === strlen($configuration),
         'Could not restore the synthetic Transaction Inquiry configuration.');
     echo "PASS canonical integer range validation and overflow rejection without value disclosure\n";
+
+    $intentionSecret = 'self-check-intention-secret-key';
+    $intentionEnv = "PAYMOB_SECRET_KEY={$intentionSecret}\nPAYMOB_INTEGRATION_ID_CARD=980001\n"
+        . "PAYMOB_TEST_NOTIFICATION_URL=https://verify.example.test/notify\nPAYMOB_TEST_REDIRECTION_URL=https://verify.example.test/return\n";
+    verify(file_put_contents($configurationPath, $intentionEnv) === strlen($intentionEnv), 'Could not prepare isolated Intention configuration.');
+    $intentionConfig = VerificationConfig::load($configurationDirectory, 'intention');
+    verify($intentionConfig->apiKey === '' && $intentionConfig->hmacSecret === ''
+        && $intentionConfig->kioskIntegrationId === null && $intentionConfig->walletIntegrationId === null
+        && $intentionConfig->testTransactionId === null && $intentionConfig->configuredSecrets() === [$intentionSecret],
+        'Intention configuration unexpectedly depends on credentials from another scenario.');
+    $intentionRequest = [
+        'amount' => 15000, 'currency' => 'EGP', 'payment_methods' => [980001],
+        'items' => [['name' => 'Synthetic verification item', 'amount' => 15000,
+            'description' => 'Synthetic provider verification item', 'quantity' => 1]],
+        'billing_data' => [
+            'apartment' => '1', 'first_name' => 'Verification', 'last_name' => 'Customer',
+            'street' => 'Synthetic Street', 'building' => '1', 'phone_number' => '+201000000000',
+            'city' => 'Cairo', 'country' => 'EG', 'email' => 'verification@example.test', 'floor' => '1', 'state' => 'Cairo',
+        ],
+        'special_reference' => 'verification-0123456789abcdef01234567', 'expiration' => 3600,
+        'notification_url' => 'https://verify.example.test/notify', 'redirection_url' => 'https://verify.example.test/return',
+    ];
+    $intentionHeaders = ['Authorization' => 'Token ' . $intentionSecret, 'Content-Type' => 'application/json'];
+    $intentionClassifier = ProviderAttemptStageClassifier::fromConfig($intentionConfig);
+    verify($intentionClassifier->classify('https://accept.paymob.com/v1/intention/', $intentionRequest, 'POST', $intentionHeaders) === 'create-intention',
+        'Intention did not start directly with create-intention.');
+    $intentionClassifier->recordOutcome('create-intention', true, 201);
+    $intentionAuthRejected = false;
+    try {
+        $intentionClassifier->classify('https://accept.paymob.com/api/auth/tokens', ['api_key' => 'synthetic']);
+    } catch (RuntimeException) {
+        $intentionAuthRejected = true;
+    }
+    verify($intentionAuthRejected, 'Intention classifier accepted an Auth stage after its terminal result.');
+    $intentionFailureClassifier = ProviderAttemptStageClassifier::fromConfig($intentionConfig);
+    verify($intentionFailureClassifier->classify(
+        'https://accept.paymob.com/v1/intention/',
+        $intentionRequest,
+        'POST',
+        $intentionHeaders,
+    ) === 'create-intention', 'Intention failure sequence did not start at create-intention.');
+    $intentionFailureClassifier->recordOutcome('create-intention', true, 400);
+    $intentionFailureTerminal = false;
+    try {
+        $intentionFailureClassifier->classify(
+            'https://accept.paymob.com/v1/intention/',
+            $intentionRequest,
+            'POST',
+            $intentionHeaders,
+        );
+    } catch (RuntimeException) {
+        $intentionFailureTerminal = true;
+    }
+    verify($intentionFailureTerminal, 'Intention failure state allowed a retry or another operation.');
+    $assertIntentionRejected = static function (string $url, mixed $request, array $headers = [], string $method = 'POST') use ($intentionConfig): void {
+        try { ProviderAttemptStageClassifier::fromConfig($intentionConfig)->classify($url, $request, $method, $headers); }
+        catch (RuntimeException) { return; }
+        throw new RuntimeException('Malformed Intention request was accepted by the pre-network guard.');
+    };
+    foreach ([
+        ['https://accept.paymob.com/api/v1/intention/', $intentionRequest],
+        ['https://example.test/v1/intention/', $intentionRequest],
+        ['http://accept.paymob.com/v1/intention/', $intentionRequest],
+        ['https://accept.paymob.com/v1/intention/?x=1', $intentionRequest],
+        ['https://accept.paymob.com/v1/intention/#frag', $intentionRequest],
+    ] as [$badUrl, $badRequest]) $assertIntentionRejected($badUrl, $badRequest, $intentionHeaders);
+    $assertIntentionRejected('https://accept.paymob.com/v1/intention/', $intentionRequest, $intentionHeaders, 'GET');
+    $wrongIntegration = $intentionRequest; $wrongIntegration['payment_methods'] = [980002];
+    $assertIntentionRejected('https://accept.paymob.com/v1/intention/', $wrongIntegration, $intentionHeaders);
+    $missingField = $intentionRequest; unset($missingField['items']);
+    $assertIntentionRejected('https://accept.paymob.com/v1/intention/', $missingField, $intentionHeaders);
+    foreach ([[], ['Authorization' => 'Token wrong', 'Content-Type' => 'application/json'],
+        ['Authorization' => 'Bearer ' . $intentionSecret, 'Content-Type' => 'application/json'],
+        ['Authorization' => 'Token ' . $intentionSecret]] as $badHeaders) {
+        $assertIntentionRejected('https://accept.paymob.com/v1/intention/', $intentionRequest, $badHeaders);
+    }
+    verify(!ProviderAttemptStageClassifier::validateIntentionResponse([], 980001, 'verification-0123456789abcdef01234567'),
+        'Malformed Intention response passed the response contract.');
+    $intentionResponse = ['id' => 'pi_synthetic', 'intention_order_id' => 9001, 'client_secret' => 'synthetic-client-secret',
+        'payment_methods' => [['integration_id' => 980001]], 'special_reference' => 'verification-0123456789abcdef01234567',
+        'confirmed' => false, 'status' => 'intended'];
+    verify(ProviderAttemptStageClassifier::validateIntentionResponse($intentionResponse, 980001, 'verification-0123456789abcdef01234567'),
+        'Valid synthetic Intention response failed its prepared contract.');
+    $wrongResponseIntegration = $intentionResponse;
+    $wrongResponseIntegration['payment_methods'] = [['integration_id' => 980002]];
+    verify(!ProviderAttemptStageClassifier::validateIntentionResponse($wrongResponseIntegration, 980001,
+        'verification-0123456789abcdef01234567'), 'Intention response for another integration was accepted.');
+    $intentionSanitizer = new SemanticSanitizer([$intentionSecret]);
+    $safeIntention = $intentionSanitizer->sanitize((object)$intentionResponse);
+    verify($safeIntention->client_secret === '<REDACTED_SECRET>'
+        && $safeIntention->special_reference !== $intentionResponse['special_reference']
+        && !$intentionSanitizer->containsSensitiveValues($safeIntention),
+        'Intention secret or correlation sanitization failed.');
+    $safeIntentionRequest = $intentionSanitizer->sanitize((object)$intentionRequest);
+    verify($safeIntentionRequest->special_reference === $safeIntention->special_reference,
+        'Repeated Intention special_reference did not preserve its sanitized relationship.');
+    echo "PASS Intention scenario isolation, fail-closed contract, authorization, response, and correlation guards\n";
+    verify(file_put_contents($configurationPath, $configuration) === strlen($configuration),
+        'Could not restore synthetic configuration after Intention checks.');
 
     $transactionConfig = VerificationConfig::load($configurationDirectory, 'transaction-inquiry');
     verify(

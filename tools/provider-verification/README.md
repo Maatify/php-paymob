@@ -8,7 +8,7 @@ This tooling is separate from the Unit Test suite: it makes real HTTP requests t
 
 Execution is manual and explicit. Each flow can create provider-side orders or transactions. Confirm the exact provider contract and approved scenario with the Lead before running a script; the scripts are for confirmation, not trial-and-error API discovery. They are not run automatically by CI.
 
-Requirements:
+Requirements for the existing scenarios:
 
 - PHP 8.4 or later, Composer dependencies installed, and the cURL extension.
 - A repository-local `.env` with `PAYMOB_API_KEY`, `PAYMOB_HMAC_SECRET`, all three integration IDs, and `PAYMOB_BASE_URL`.
@@ -30,6 +30,32 @@ php tools/provider-verification/kiosk.php
 php tools/provider-verification/wallet.php
 php tools/provider-verification/transaction-inquiry.php
 ```
+
+## Create Intention contract probe
+
+The verification-only `intention` scenario reads only `PAYMOB_SECRET_KEY`,
+`PAYMOB_INTEGRATION_ID_CARD`, `PAYMOB_TEST_NOTIFICATION_URL`, and
+`PAYMOB_TEST_REDIRECTION_URL`. It targets `POST
+https://accept.paymob.com/v1/intention/` directly with Token authorization. It
+does not execute Auth, Order, Payment Key, or another scenario. Configure the
+three local values in `.env`; placeholders in `.env.example` are not usable
+provider credentials or callback architecture decisions.
+
+The command creates one synthetic 15000 EGP cents Card Intention and can create
+provider-side state. Run it only after direct Lead review and separate explicit
+authorization for the exact provider call:
+
+```sh
+php tools/provider-verification/intention.php
+```
+
+`PAYMOB_SECRET_KEY`, Authorization values, client secrets, synthetic billing
+data, and private callback URL data are excluded from sanitized artifacts and
+diagnostics. A successful response must be HTTP 201 and satisfy the prepared
+response contract. The reported `special_reference_matches` boolean proves
+correlation without exposing the reference. This tooling is a transitional
+verification-only contract probe; it is not package runtime behavior or a
+public request builder.
 
 `payment-key.php` requires exactly one explicit method. The other payment flows select their current integration ID from configuration. `wallet.php` initiates the current wallet flow only; it does not submit an OTP or follow a redirect.
 `transaction-inquiry.php` authenticates and reads only the configured Transaction ID with `GET /api/acceptance/transactions/{id}` and Bearer authorization. It creates no order or payment. Run it only after separate Lead authorization for a real provider call.

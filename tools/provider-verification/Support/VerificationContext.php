@@ -21,7 +21,7 @@ use Maatify\Paymob\Transaction\Service\TransactionService;
 use Maatify\Paymob\Payment\Service\WalletPaymentService;
 use Throwable;
 
-/** Wires one explicit manual provider flow through the package services and capture transport. */
+/** Runs one manual provider flow through package services or an explicit verification-only probe. */
 final class VerificationContext
 {
     private string $stage = 'preflight';
@@ -171,6 +171,59 @@ final class VerificationContext
     /** Execute the requested chain and return summaries that contain no tokens or provider IDs. */
     private function execute(): array
     {
+        if ($this->config->scenario === 'intention') {
+            $reference = 'verification-' . bin2hex(random_bytes(12));
+            $request = [
+                'amount' => 15000,
+                'currency' => 'EGP',
+                'payment_methods' => [$this->config->cardIntegrationId],
+                'items' => [[
+                    'name' => 'Synthetic verification item',
+                    'amount' => 15000,
+                    'description' => 'Synthetic provider verification item',
+                    'quantity' => 1,
+                ]],
+                'billing_data' => [
+                    'apartment' => '1', 'first_name' => 'Verification', 'last_name' => 'Customer',
+                    'street' => 'Synthetic Street', 'building' => '1',
+                    'phone_number' => '+201000000000',
+                    'city' => 'Cairo', 'country' => 'EG', 'email' => 'verification@example.test',
+                    'floor' => '1', 'state' => 'Cairo',
+                ],
+                'special_reference' => $reference,
+                'expiration' => 3600,
+                'notification_url' => $this->config->notificationUrl,
+                'redirection_url' => $this->config->redirectionUrl,
+            ];
+            $this->setStage('create-intention');
+            $response = $this->apiClient->post('/v1/intention/', $request, [
+                'Authorization' => 'Token ' . $this->config->secretKey,
+                'Content-Type' => 'application/json',
+            ]);
+            if ($this->apiClient->lastHttpStatus() !== 201
+                || !ProviderAttemptStageClassifier::validateIntentionResponse(
+                    $response,
+                    (int)$this->config->cardIntegrationId,
+                    $reference,
+                )) {
+                throw new RuntimeException(
+                    'The Create Intention response did not satisfy its prepared success contract.',
+                );
+            }
+            return [
+                'result' => 'PASS',
+                'scenario' => 'intention',
+                'service_results' => [
+                    'create_intention' => [
+                        'http_status' => 201,
+                        'response_contract_valid' => true,
+                        'special_reference_matches' => $response['special_reference'] === $reference,
+                        'client_secret' => '[withheld]',
+                    ],
+                ],
+            ];
+        }
+
         $configDTO = $this->config->packageConfig();
         $authService = new AuthService($this->apiClient, $configDTO, $this->tokenRepository, new SystemClock(new \DateTimeZone('UTC')));
         $results = [];

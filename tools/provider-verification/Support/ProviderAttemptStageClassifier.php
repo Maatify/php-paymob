@@ -7,7 +7,7 @@ namespace Maatify\Paymob\ProviderVerification\Support;
 use RuntimeException;
 use stdClass;
 
-/** Enforces the next legal request and exact 401 recovery transitions for one verification run. */
+/** Enforces each scenario's legal request transitions and exact 401 recovery rules. */
 final class ProviderAttemptStageClassifier
 {
     private string $nextOperation = 'auth';
@@ -16,11 +16,15 @@ final class ProviderAttemptStageClassifier
 
     private ?string $authorizedStage = null;
 
+    /** @param string $secretKey Verification credential used only during pre-network authorization checks. */
     private function __construct(
         private readonly string $scenario,
         private readonly ?string $paymentMethod,
         private readonly ?int $integrationId,
         private readonly ?int $transactionId,
+        private readonly string $secretKey,
+        private readonly ?string $expectedNotificationUrl,
+        private readonly ?string $expectedRedirectionUrl,
     ) {}
 
     /** Build a run-scoped classifier from configuration that has already been validated. */
@@ -42,7 +46,7 @@ final class ProviderAttemptStageClassifier
             'card' => $config->cardIntegrationId,
             'kiosk' => $config->kioskIntegrationId,
             'wallet' => $config->walletIntegrationId,
-            default => null,
+            default => $config->scenario === 'intention' ? $config->cardIntegrationId : null,
         };
 
         if ($paymentMethod !== null && (!is_int($integrationId) || $integrationId < 1)) {
@@ -54,11 +58,24 @@ final class ProviderAttemptStageClassifier
             throw new RuntimeException('The configured Transaction ID is unavailable for attempt classification.');
         }
 
-        return new self($config->scenario, $paymentMethod, $integrationId, $config->testTransactionId);
+        $classifier = new self(
+            $config->scenario,
+            $paymentMethod,
+            $integrationId,
+            $config->testTransactionId,
+            $config->secretKey ?? '',
+            $config->notificationUrl,
+            $config->redirectionUrl,
+        );
+        if ($config->scenario === 'intention') {
+            $classifier->nextOperation = 'create-intention';
+        }
+
+        return $classifier;
     }
 
     /** Validate and authorize the exact next request in the current run. */
-    public function classify(string $url, mixed $request): string
+    public function classify(string $url, mixed $request, string $method = 'POST', array $headers = []): string
     {
         if ($this->authorizedStage !== null) {
             throw new RuntimeException('The previous provider attempt has no recorded outcome.');
@@ -71,19 +88,27 @@ final class ProviderAttemptStageClassifier
         }
 
         $path = $parts['path'] ?? '';
-        if ($this->scenario === 'transaction-inquiry' && $path === '/api/acceptance/transactions/' . $this->transactionId) {
-            $operation = $this->validateTransactionInquiry($parts, $path, $request);
-        } else {
-            if (!$this->isRequestObject($request)) {
-                throw new RuntimeException('A provider attempt request must be an object.');
+        if ($this->scenario === 'intention') {
+            if ($method !== 'POST' || $path !== '/v1/intention/' || isset($parts['query']) || isset($parts['fragment'])
+                || isset($parts['port']) || isset($parts['user']) || isset($parts['pass'])) {
+                throw new RuntimeException('The Intention attempt URL or method failed its exact contract guard.');
             }
-            $operation = match ($path) {
-                '/api/auth/tokens' => $this->validateAuth($request),
-                '/api/ecommerce/orders' => $this->validateOrder($request),
-                '/api/acceptance/payment_keys' => $this->validatePaymentKey($request),
-                '/api/acceptance/payments/pay' => $this->validatePayment($request),
-                default => throw new RuntimeException('A provider attempt URL path is not supported.'),
-            };
+            $operation = $this->validateIntention($request, $headers);
+        } else {
+            if ($this->scenario === 'transaction-inquiry' && $path === '/api/acceptance/transactions/' . $this->transactionId) {
+                $operation = $this->validateTransactionInquiry($parts, $path, $request);
+            } else {
+                if (!$this->isRequestObject($request)) {
+                    throw new RuntimeException('A provider attempt request must be an object.');
+                }
+                $operation = match ($path) {
+                    '/api/auth/tokens' => $this->validateAuth($request),
+                    '/api/ecommerce/orders' => $this->validateOrder($request),
+                    '/api/acceptance/payment_keys' => $this->validatePaymentKey($request),
+                    '/api/acceptance/payments/pay' => $this->validatePayment($request),
+                    default => throw new RuntimeException('A provider attempt URL path is not supported.'),
+                };
+            }
         }
 
         $refresh = $this->pendingRecovery !== null && $this->nextOperation === 'auth';
@@ -110,6 +135,89 @@ final class ProviderAttemptStageClassifier
 
         $this->authorizedStage = $stage;
         return $stage;
+    }
+
+    /** @param array<string, mixed> $headers */
+    private function validateIntention(mixed $request, array $headers): string
+    {
+        if ($this->nextOperation !== 'create-intention' || !is_array($request) || array_is_list($request)) {
+            throw new RuntimeException('The Intention scenario must start with its exact create request.');
+        }
+        $expected = [
+            'amount', 'currency', 'payment_methods', 'items', 'billing_data',
+            'special_reference', 'expiration', 'notification_url', 'redirection_url',
+        ];
+        $actual = array_keys((array)$request);
+        sort($expected);
+        sort($actual);
+        $amount = $request['amount'] ?? null;
+        if ($actual !== $expected || !is_int($amount) || $amount < 1
+            || ($request['currency'] ?? null) !== 'EGP'
+            || ($request['payment_methods'] ?? null) !== [$this->integrationId]
+            || !is_array($request['items'] ?? null) || count($request['items']) !== 1
+            || !is_array($request['items'][0] ?? null)
+            || array_keys($request['items'][0]) !== ['name', 'amount', 'description', 'quantity']
+            || ($request['items'][0]['name'] ?? null) !== 'Synthetic verification item'
+            || ($request['items'][0]['amount'] ?? null) !== $amount
+            || ($request['items'][0]['quantity'] ?? null) !== 1
+            || ($request['items'][0]['description'] ?? null) !== 'Synthetic provider verification item'
+            || ($request['billing_data'] ?? null) !== [
+                'apartment' => '1', 'first_name' => 'Verification', 'last_name' => 'Customer',
+                'street' => 'Synthetic Street', 'building' => '1',
+                'phone_number' => '+20' . '1000' . str_repeat('0', 6),
+                'city' => 'Cairo', 'country' => 'EG', 'email' => 'verification@example.test',
+                'floor' => '1', 'state' => 'Cairo',
+            ]
+            || !is_string($request['special_reference'] ?? null)
+            || preg_match('/^verification-[a-f0-9]{24}$/D', $request['special_reference']) !== 1
+            || !is_int($request['expiration'] ?? null) || $request['expiration'] < 1 || $request['expiration'] > 3600
+            || ($request['notification_url'] ?? null) !== $this->expectedNotificationUrl
+            || ($request['redirection_url'] ?? null) !== $this->expectedRedirectionUrl) {
+            throw new RuntimeException('The Intention request does not match its closed synthetic Card contract.');
+        }
+        $headerMap = [];
+        if (count($headers) !== 2) {
+            throw new RuntimeException('The Intention request must carry exactly its authorization and JSON headers.');
+        }
+        foreach ($headers as $name => $value) {
+            if (!is_string($name) || !is_string($value)) {
+                throw new RuntimeException('The Intention request headers must be explicit name/value pairs.');
+            }
+            $headerName = strtolower($name);
+            if (isset($headerMap[$headerName])) {
+                throw new RuntimeException('The Intention request contains a duplicate header.');
+            }
+            $headerMap[$headerName] = $value;
+        }
+        if (($headerMap['authorization'] ?? null) !== 'Token ' . $this->secretKey
+            || $this->secretKey === '' || strtolower($headerMap['content-type'] ?? '') !== 'application/json') {
+            throw new RuntimeException(
+                'The Intention request authorization or content type failed its pre-network guard.',
+            );
+        }
+        return 'create-intention';
+    }
+
+    /** Validate successful provider response fields without inferring absent values. */
+    public static function validateIntentionResponse(mixed $response, int $integrationId, string $reference): bool
+    {
+        if (!is_array($response) || !is_string($response['id'] ?? null) || trim($response['id']) === ''
+            || !is_int($response['intention_order_id'] ?? null) || $response['intention_order_id'] < 1
+            || !is_string($response['client_secret'] ?? null) || trim($response['client_secret']) === ''
+            || !is_array($response['payment_methods'] ?? null) || !is_string($response['special_reference'] ?? null)
+            || $response['special_reference'] !== $reference || !is_bool($response['confirmed'] ?? null)
+            || !is_string($response['status'] ?? null) || trim($response['status']) === '') {
+            return false;
+        }
+        foreach ($response['payment_methods'] as $method) {
+            if (is_array($method) && ($method['integration_id'] ?? null) === $integrationId) {
+                return true;
+            }
+            if ($method instanceof stdClass && ($method->integration_id ?? null) === $integrationId) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Record the actual captured transport and HTTP outcome before response decoding. */
@@ -245,6 +353,7 @@ final class ProviderAttemptStageClassifier
     {
         return match ($this->scenario) {
             'auth' => 'terminal',
+            'intention' => 'create-intention',
             'transaction-inquiry' => 'transaction-inquiry',
             default => 'order',
         };
