@@ -22,7 +22,8 @@ use Maatify\Paymob\Authentication\DTO\TokenResponseDTO;
 use Maatify\Paymob\Exception\AuthException;
 use Maatify\Paymob\Exception\NetworkException;
 use Maatify\Paymob\Exception\ApiException;
-use Maatify\Paymob\Exception\PaymobException;
+use Maatify\Paymob\Exception\PaymobExceptionInterface;
+use Maatify\Paymob\Exception\UnauthorizedException;
 use Maatify\Paymob\Adapter\ApiClient;
 use Maatify\Paymob\Authentication\Repository\InMemoryTokenRepository;
 use Maatify\Paymob\Authentication\Service\AuthService;
@@ -65,14 +66,15 @@ try {
     echo "Issued At: " . date('Y-m-d H:i:s', $token2->issuedAt) . "\n";
     echo "Expires At: " . date('Y-m-d H:i:s', $token2->expiresAt) . "\n";
 
+} catch (UnauthorizedException $e) {
+    echo "❌ Paymob authentication was rejected: " . $e->getMessage() . PHP_EOL;
 } catch (AuthException $e) {
     echo "❌ Auth error: " . $e->getMessage() . PHP_EOL;
 } catch (NetworkException $e) {
     echo "❌ Network error: " . $e->getMessage() . PHP_EOL;
 } catch (ApiException $e) {
     echo "❌ API error: " . $e->getMessage() . PHP_EOL;
-} catch (PaymobException $e) {
+} catch (PaymobExceptionInterface $e) {
     echo "❌ General Paymob SDK error: " . $e->getMessage() . PHP_EOL;
 }
-
 

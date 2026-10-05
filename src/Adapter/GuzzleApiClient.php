@@ -20,7 +20,13 @@ final readonly class GuzzleApiClient implements ApiClientInterface
     public function __construct(PaymobConfig $config, private ?LoggerInterface $logger = null, private string $channel = 'paymob.guzzle')
     {
         if (!class_exists(Client::class)) throw new OptionalCapabilityUnavailableException('The Guzzle adapter requires guzzlehttp/guzzle ^7.0.');
-        $this->client = new Client(['base_uri' => $config->baseUrl, 'http_errors' => false, 'timeout' => 30, 'verify' => true]);
+        $this->client = new Client([
+            'base_uri' => rtrim($config->baseUrl, '/') . '/',
+            'allow_redirects' => false,
+            'http_errors' => false,
+            'timeout' => 30,
+            'verify' => true,
+        ]);
     }
 
     public function post(string $uri, array $body, array $headers = []): array { return $this->send('POST', $uri, ['json' => $body, 'headers' => $headers]); }
@@ -28,7 +34,7 @@ final readonly class GuzzleApiClient implements ApiClientInterface
 
     private function send(string $method, string $uri, array $options): array
     {
-        try { $response = $this->client->request($method, $uri, $options); }
+        try { $response = $this->client->request($method, ltrim($uri, '/'), $options); }
         catch (GuzzleException $e) {
             if ($e instanceof RequestException && $e->hasResponse()) {
                 $response = $e->getResponse();

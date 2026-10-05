@@ -26,7 +26,7 @@ use Maatify\Paymob\Order\DTO\OrderItemCollectionDTO;
 use Maatify\Paymob\Order\Command\CreateOrderCommand;
 use Maatify\Paymob\Payment\ValueObject\BillingData;
 use Maatify\Paymob\Enum\CurrencyEnum;
-use Maatify\Paymob\Exception\{ApiException, AuthException, NetworkException, OrderException, TransactionException};
+use Maatify\Paymob\Exception\{ApiException, AuthException, NetworkException, OrderException, PaymobExceptionInterface, TransactionException};
 use Maatify\Paymob\Facade\PaymobFacade;
 use Maatify\Paymob\Authentication\Repository\InMemoryTokenRepository;
 
@@ -85,6 +85,8 @@ try {
 } catch (AuthException|OrderException|TransactionException|NetworkException|ApiException $e) {
     echo "❌ SDK error: " . $e->getMessage() . PHP_EOL;
     print_r($e->getResponse());
+} catch (PaymobExceptionInterface $e) {
+    echo "❌ Paymob SDK error: " . $e->getMessage() . PHP_EOL;
 } catch (Throwable $e) {
     echo "❌ Unexpected error: " . $e->getMessage();
 }

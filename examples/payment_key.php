@@ -26,7 +26,7 @@ use Maatify\SharedCommon\Infrastructure\SystemClock;
 use Maatify\Paymob\Order\Service\OrderService;
 use Maatify\Paymob\Payment\Service\PaymentKeyService;
 use Maatify\Paymob\Authentication\Repository\InMemoryTokenRepository;
-use Maatify\Paymob\Exception\{AuthException, ApiException, NetworkException, OrderException, TransactionException};
+use Maatify\Paymob\Exception\{AuthException, ApiException, NetworkException, OrderException, PaymobExceptionInterface, TransactionException};
 
 // Auth + Services
 $repo = new InMemoryTokenRepository();
@@ -87,6 +87,8 @@ try {
 } catch (AuthException|OrderException|TransactionException|NetworkException|ApiException $e) {
     echo "❌ SDK error: " . $e->getMessage() . PHP_EOL;
     print_r($e->getResponse());
+} catch (PaymobExceptionInterface $e) {
+    echo "❌ Paymob SDK error: " . $e->getMessage() . PHP_EOL;
 } catch (Throwable $e) {
     echo "❌ Unexpected error: " . $e->getMessage();
 }

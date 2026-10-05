@@ -24,7 +24,8 @@ use Maatify\Paymob\Exception\{
     OrderException,
     TransactionException,
     NetworkException,
-    ApiException
+    ApiException,
+    PaymobExceptionInterface
 };
 
 /** @var PaymobExampleBootstrap $bootstrap */
@@ -84,6 +85,8 @@ try {
 } catch (AuthException|OrderException|TransactionException|NetworkException|ApiException $e) {
     echo "❌ SDK error: " . $e->getMessage() . PHP_EOL;
     print_r($e->getResponse());
+} catch (PaymobExceptionInterface $e) {
+    echo "❌ Paymob SDK error: " . $e->getMessage() . PHP_EOL;
 } catch (Throwable $e) {
     echo "❌ Unexpected error: " . $e->getMessage();
 }

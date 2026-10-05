@@ -14,6 +14,7 @@ declare(strict_types=1);
 /** @var PaymobExampleBootstrap $bootstrap */
 
 use Maatify\Paymob\Exception\ApiException;
+use Maatify\Paymob\Exception\PaymobExceptionInterface;
 use Maatify\Paymob\Exception\AuthException;
 use Maatify\Paymob\Exception\NetworkException;
 use Maatify\Paymob\Exception\OrderException;
@@ -55,7 +56,8 @@ try {
 } catch (AuthException|TransactionException|NetworkException|ApiException $e) {
     echo "❌ Error fetching transaction: " . $e->getMessage() . PHP_EOL;
     print_r($e->getResponse());
+} catch (PaymobExceptionInterface $e) {
+    echo "❌ Paymob SDK error: " . $e->getMessage() . PHP_EOL;
 } catch (Throwable $e) {
     echo "❌ Unexpected error: " . $e->getMessage();
 }
-

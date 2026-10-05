@@ -20,6 +20,7 @@ use Maatify\Paymob\Order\ValueObject\OrderItem;
 use Maatify\Paymob\Order\DTO\OrderItemCollectionDTO;
 use Maatify\Paymob\Enum\CurrencyEnum;
 use Maatify\Paymob\Exception\OrderException;
+use Maatify\Paymob\Exception\PaymobExceptionInterface;
 
 /** @var PaymobExampleBootstrap $bootstrap */
 $bootstrap = require __DIR__ . '/bootstrap.php';
@@ -64,6 +65,8 @@ try {
     if ($resp = $e->getResponse()) {
         print_r($resp);
     }
+} catch (PaymobExceptionInterface $e) {
+    echo "❌ Paymob SDK error: " . $e->getMessage() . PHP_EOL;
 } catch (Throwable $e) {
     echo "❌ Unexpected error: " . $e->getMessage() . PHP_EOL;
 }

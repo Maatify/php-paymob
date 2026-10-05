@@ -26,7 +26,7 @@ final readonly class PaymentKeyService
             $payload = ['auth_token' => $fresh, ...$command->toArray()];
             $response = $this->http->post($uri, $payload);
         }
-        if (!isset($response['token']) || !is_string($response['token']) || $response['token'] === '') throw new ApiException('Paymob Payment Key response is missing its required token.', null, $response);
+        if (!isset($response['token']) || !is_string($response['token']) || trim($response['token']) === '') throw new ApiException('Paymob Payment Key response is missing its required token.', null, $response);
         return new PaymentKeyResponseDTO($response['token'], $command->orderId);
     }
 }

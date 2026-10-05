@@ -6,9 +6,14 @@ namespace Maatify\Paymob\Tests\System\Runtime;
 
 use DateTimeImmutable;
 use DateTimeZone;
+use GuzzleHttp\Handler\MockHandler;
+use GuzzleHttp\HandlerStack;
+use GuzzleHttp\Middleware;
+use GuzzleHttp\Psr7\Response;
 use Maatify\Paymob\Adapter\ApiClientInterface;
 use Maatify\Paymob\Adapter\ApiClient;
 use Maatify\Paymob\Adapter\CurlApiClient;
+use Maatify\Paymob\Adapter\GuzzleApiClient;
 use Maatify\Paymob\Adapter\ResponseDecoder;
 use Maatify\Paymob\Authentication\DTO\TokenResponseDTO;
 use Maatify\Paymob\Authentication\Repository\FileTokenRepository;
@@ -234,6 +239,93 @@ final class RuntimeSecuritySystemTest extends TestCase
             self::assertSame($response, $exception->getResponse());
             self::assertNull($exception->getProviderStatusCode());
         }
+    }
+
+    public function testPaymentKeyServiceRejectsWhitespaceTokenAndPreservesOriginalEvidence(): void
+    {
+        $config = new PaymobConfig('key', 'hmac', 1, 2, 3);
+        $response = ['token' => " \t ", 'order' => 42, 'provider_flag' => true];
+        $api = new QueueApiClient();
+        $api->postQueue = [$response];
+        $service = new PaymentKeyService($api, new AuthService($api, $config, $this->repoWithCachedToken($config), new FixedTestClock(1000)));
+        $command = new GeneratePaymentKeyCommand(42, 1, 100, CurrencyEnum::EGP, new BillingData('First', 'Last', 'first@example.test', '01000000000'));
+
+        try {
+            $service->generate($command);
+            self::fail('Whitespace-only Payment Key token must throw ApiException.');
+        } catch (ApiException $exception) {
+            self::assertSame($response, $exception->getResponse());
+            self::assertNull($exception->getProviderStatusCode());
+            self::assertCount(1, $api->postCalls);
+        }
+
+        $validTokenApi = new QueueApiClient();
+        $validTokenApi->postQueue = [['token' => " \tvalid-key "]];
+        $validToken = (new PaymentKeyService(
+            $validTokenApi,
+            new AuthService($validTokenApi, $config, $this->repoWithCachedToken($config), new FixedTestClock(1000)),
+        ))->generate($command);
+        self::assertSame(" \tvalid-key ", $validToken->token);
+    }
+
+    public function testGuzzleAdapterPreservesBasePathForAuthGetPostAndDoesNotFollowRedirects(): void
+    {
+        $config = new PaymobConfig('key', 'hmac', 1, 2, 3, 'https://gateway.example/paymob/api/');
+        $adapter = new GuzzleApiClient($config);
+        $clientProperty = new \ReflectionProperty($adapter, 'client');
+        $guzzleClient = $clientProperty->getValue($adapter);
+        $history = [];
+        $stack = HandlerStack::create(new MockHandler([
+            new Response(200, [], '{"token":"auth-token","profile":{"id":7}}'),
+            new Response(200, [], '{"read":true}'),
+            new Response(200, [], '{"created":true}'),
+            new Response(302, ['Location' => 'https://redirect.example/elsewhere'], '{}'),
+            new Response(200, [], '{"followed":true}'),
+        ]));
+        $stack->push(Middleware::history($history));
+        $clientConfigProperty = new \ReflectionProperty(\GuzzleHttp\Client::class, 'config');
+        $clientConfig = $clientConfigProperty->getValue($guzzleClient);
+        $clientConfig['handler'] = $stack;
+        $clientConfigProperty->setValue($guzzleClient, $clientConfig);
+
+        $auth = new AuthService($adapter, $config, new InMemoryTokenRepository(), new FixedTestClock(1000));
+        self::assertSame('auth-token', $auth->getToken()->token);
+        self::assertSame(['read' => true], $adapter->get('/acceptance/transactions/123', ['source' => 'system'], ['X-Caller' => 'runtime-test']));
+        self::assertSame(['created' => true], $adapter->post('/ecommerce/orders', ['id' => 42], ['X-Caller' => 'runtime-test']));
+        self::assertSame([], $adapter->get('/redirect-check'));
+
+        self::assertCount(4, $history, 'A 302 response must not trigger a second request.');
+        self::assertSame('https://gateway.example/paymob/api/auth/tokens', (string) $history[0]['request']->getUri());
+        self::assertSame('https://gateway.example/paymob/api/acceptance/transactions/123?source=system', (string) $history[1]['request']->getUri());
+        self::assertSame('runtime-test', $history[1]['request']->getHeaderLine('X-Caller'));
+        self::assertSame('https://gateway.example/paymob/api/ecommerce/orders', (string) $history[2]['request']->getUri());
+        self::assertSame('runtime-test', $history[2]['request']->getHeaderLine('X-Caller'));
+        self::assertSame(['id' => 42], json_decode((string) $history[2]['request']->getBody(), true, flags: JSON_THROW_ON_ERROR));
+        self::assertSame('https://gateway.example/paymob/api/redirect-check', (string) $history[3]['request']->getUri());
+        self::assertFalse($guzzleClient->getConfig('allow_redirects'));
+        self::assertFalse($guzzleClient->getConfig('http_errors'));
+        self::assertTrue($guzzleClient->getConfig('verify'));
+        self::assertSame(30, $guzzleClient->getConfig('timeout'));
+
+        $defaultAdapter = new GuzzleApiClient(new PaymobConfig('key', 'hmac', 1, 2, 3));
+        $defaultGuzzleClient = (new \ReflectionProperty($defaultAdapter, 'client'))->getValue($defaultAdapter);
+        self::assertSame('https://accept.paymob.com/api/', (string) $defaultGuzzleClient->getConfig('base_uri'));
+        $defaultHistory = [];
+        $defaultStack = HandlerStack::create(new MockHandler([
+            new Response(200, [], '{"token":"default-auth-token","profile":{"id":8}}'),
+        ]));
+        $defaultStack->push(Middleware::history($defaultHistory));
+        $defaultClientConfig = $clientConfigProperty->getValue($defaultGuzzleClient);
+        $defaultClientConfig['handler'] = $defaultStack;
+        $clientConfigProperty->setValue($defaultGuzzleClient, $defaultClientConfig);
+        $defaultAuth = new AuthService(
+            $defaultAdapter,
+            new PaymobConfig('key', 'hmac', 1, 2, 3),
+            new InMemoryTokenRepository(),
+            new FixedTestClock(1000),
+        );
+        self::assertSame('default-auth-token', $defaultAuth->getToken()->token);
+        self::assertSame('https://accept.paymob.com/api/auth/tokens', (string) $defaultHistory[0]['request']->getUri());
     }
 
     public function testOrderServiceRejectsMalformedOptionalProviderFieldsWithFullEvidence(): void

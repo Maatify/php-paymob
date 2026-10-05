@@ -253,9 +253,11 @@ try {
     verify(
         is_string($guzzleSource)
         && str_contains($guzzleSource, 'return $this->send(\'GET\', $uri, [\'query\' => $query, \'headers\' => $headers]);')
-        && str_contains($guzzleSource, '$this->client->request($method, $uri, $options)')
+        && str_contains($guzzleSource, '$this->client->request($method, ltrim($uri, \'/\'), $options)')
+        && str_contains($guzzleSource, '\'base_uri\' => rtrim($config->baseUrl, \'/\') . \'/\'')
+        && str_contains($guzzleSource, '\'allow_redirects\' => false')
         && str_contains($guzzleSource, "'http_errors' => false"),
-        'GuzzleApiClient::get() no longer forwards query, caller headers, and timeout to its request options.',
+        'GuzzleApiClient no longer preserves the configured base path, disables redirects, or forwards GET query and headers.',
     );
     echo "PASS Guzzle GET caller headers and provider-response classification contract\n";
 

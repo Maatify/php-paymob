@@ -476,7 +476,7 @@ The Transaction Response Callback is for customer-facing result and redirect han
 ## 🔥 Error Handling
 
 All SDK calls may throw typed exceptions.
-Package exceptions implement `PaymobExceptionInterface` and use the `maatify/exceptions` base.
+Package exceptions implement `PaymobExceptionInterface`, the package-wide catch boundary, and use the `maatify/exceptions` base.
 
 ```php
 try {
@@ -484,6 +484,9 @@ try {
 } catch (OrderException $e) {
     echo "❌ Order error: " . $e->getMessage();
     print_r($e->getResponse());
+} catch (\Maatify\Paymob\Exception\PaymobExceptionInterface $e) {
+    // Package-wide fallback: this marker is the stable catch boundary.
+    echo "❌ Paymob SDK error: " . $e->getMessage();
 }
 ```
 
