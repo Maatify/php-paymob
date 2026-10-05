@@ -105,8 +105,12 @@ $expectClassificationFailure = static function (
     verify(false, 'Malformed request unexpectedly classified: ' . $description);
 };
 
-$makeSyntheticOrderRequest = static function (string $authToken, string $merchantOrderId): array {
-    return (new CreateOrderCommand(
+$composeSyntheticAuthenticatedRequest = static function (array $commandPayload, string $authToken): array {
+    return ['auth_token' => $authToken, ...$commandPayload];
+};
+
+$makeSyntheticOrderRequest = static function (string $authToken, string $merchantOrderId) use ($composeSyntheticAuthenticatedRequest): array {
+    $commandPayload = (new CreateOrderCommand(
         amountCents: 15000,
         currency: CurrencyEnum::EGP,
         merchantOrderId: $merchantOrderId,
@@ -116,11 +120,12 @@ $makeSyntheticOrderRequest = static function (string $authToken, string $merchan
             quantity: 1,
             description: 'Synthetic provider verification order',
         )],
-    ))->toArray($authToken);
+    ))->toArray();
+    return $composeSyntheticAuthenticatedRequest($commandPayload, $authToken);
 };
 
-$makeSyntheticPaymentKeyRequest = static function (int $integrationId, string $authToken): array {
-    return (new GeneratePaymentKeyCommand(
+$makeSyntheticPaymentKeyRequest = static function (int $integrationId, string $authToken) use ($composeSyntheticAuthenticatedRequest): array {
+    $commandPayload = (new GeneratePaymentKeyCommand(
         orderId: 123456,
         integrationId: $integrationId,
         amountCents: 15000,
@@ -140,7 +145,8 @@ $makeSyntheticPaymentKeyRequest = static function (int $integrationId, string $a
             state: 'Synthetic State',
         ),
         expirationSeconds: 180,
-    ))->toArray($authToken);
+    ))->toArray();
+    return $composeSyntheticAuthenticatedRequest($commandPayload, $authToken);
 };
 
 try {
@@ -1730,12 +1736,12 @@ JSON;
     );
 
     $kioskRequestDTO = new InitiateKioskPaymentCommand($kioskPaymentToken);
-    $kioskDTORequest = $kioskRequestDTO->toArray($kioskAuthToken);
+    $kioskDTORequest = $composeSyntheticAuthenticatedRequest($kioskRequestDTO->toArray(), $kioskAuthToken);
     verify(
         $kioskDTORequest === [
+            'auth_token' => $kioskAuthToken,
             'source' => ['identifier' => 'AGGREGATOR', 'subtype' => 'AGGREGATOR'],
             'payment_token' => $kioskPaymentToken,
-            'auth_token' => $kioskAuthToken,
         ],
         'Kiosk request DTO did not produce the accepted AGGREGATOR request contract.',
     );
@@ -2087,7 +2093,7 @@ JSON;
     ];
     $kioskPaymentExchange = [
         'https://accept.paymob.com/api/acceptance/payments/pay',
-        $kioskRequestDTO->toArray($kioskAuthToken),
+        $composeSyntheticAuthenticatedRequest($kioskRequestDTO->toArray(), $kioskAuthToken),
         $syntheticKioskResponse,
     ];
     $kioskFourExchangeRun = [
@@ -2234,7 +2240,7 @@ JSON;
         billingData: $cardBilling,
         expirationSeconds: 180,
     );
-    $cardPaymentKeyRequest = $cardGeneratePaymentKeyCommand->toArray($cardAuthToken);
+    $cardPaymentKeyRequest = $composeSyntheticAuthenticatedRequest($cardGeneratePaymentKeyCommand->toArray(), $cardAuthToken);
     verify(
         array_diff([
             'auth_token', 'order_id', 'integration_id', 'amount_cents', 'currency', 'expiration', 'billing_data',
@@ -2454,7 +2460,7 @@ JSON;
         $cardRetryAuthExchange,
         [
             $paymentKeyUrl,
-            $cardGeneratePaymentKeyCommand->toArray($cardRefreshedAuthToken),
+            $composeSyntheticAuthenticatedRequest($cardGeneratePaymentKeyCommand->toArray(), $cardRefreshedAuthToken),
             [
                 'token' => $cardRetryPaymentToken,
                 'order' => $cardOrderId,
@@ -2963,7 +2969,7 @@ JSON;
         $kioskRetryAuthExchange,
         [
             'https://accept.paymob.com/api/acceptance/payments/pay',
-            $kioskRequestDTO->toArray($kioskRefreshedAuthToken),
+            $composeSyntheticAuthenticatedRequest($kioskRequestDTO->toArray(), $kioskRefreshedAuthToken),
             $syntheticKioskResponse,
         ],
     ];
@@ -3055,8 +3061,7 @@ JSON;
         'Kiosk durable failure artifact omitted the selected scenario.',
     );
 
-    $malformedKioskPayRequest = $kioskRequestDTO->toArray($kioskAuthToken);
-    unset($malformedKioskPayRequest['auth_token']);
+    $malformedKioskPayRequest = $kioskRequestDTO->toArray();
     $malformedKioskDirectory = $makeKioskRecoveryDirectory('malformed-pay');
     $writeRecoveryRun($malformedKioskDirectory, [
         $kioskAuthExchange,

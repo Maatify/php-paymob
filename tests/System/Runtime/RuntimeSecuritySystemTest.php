@@ -104,6 +104,61 @@ final class RuntimeSecuritySystemTest extends TestCase
         ] as $class) self::assertContains(\JsonSerializable::class, class_implements($class));
     }
 
+    public function testCommandsSerializeOnlyIntentAndServicesComposeAuthToken(): void
+    {
+        $config = new PaymobConfig('key', 'hmac', 1, 2, 3);
+        $orderCommand = new CreateOrderCommand(
+            100,
+            CurrencyEnum::EGP,
+            'order-ref',
+            [new \Maatify\Paymob\Order\ValueObject\OrderItem('item', 100, 1)],
+        );
+        $orderIntent = $orderCommand->toArray();
+        self::assertSame([
+            'amount_cents' => 100,
+            'currency' => 'EGP',
+            'merchant_order_id' => 'order-ref',
+            'items' => [['name' => 'item', 'amount_cents' => 100, 'quantity' => 1]],
+        ], $orderIntent);
+        self::assertArrayNotHasKey('auth_token', $orderIntent);
+        $orderApi = new QueueApiClient();
+        $orderApi->postQueue = [['id' => 5, 'created_at' => 'now', 'currency' => 'EGP', 'amount_cents' => 100]];
+        (new OrderService($orderApi, new AuthService($orderApi, $config, $this->repoWithCachedToken($config), new FixedTestClock(1000))))
+            ->createOrder($orderCommand);
+        self::assertSame(['auth_token' => 'cached', ...$orderIntent], $orderApi->postCalls[0]['body']);
+        self::assertSame($orderIntent, $orderCommand->toArray());
+
+        $billing = new BillingData('First', 'Last', 'first@example.test', '01000000000');
+        $keyCommand = new GeneratePaymentKeyCommand(5, 1, 100, CurrencyEnum::EGP, $billing);
+        $keyIntent = $keyCommand->toArray();
+        self::assertSame(['order_id', 'integration_id', 'amount_cents', 'currency', 'expiration', 'billing_data'], array_keys($keyIntent));
+        self::assertSame(180, $keyIntent['expiration']);
+        self::assertArrayNotHasKey('auth_token', $keyIntent);
+        $keyApi = new QueueApiClient();
+        $keyApi->postQueue = [['token' => 'payment-key']];
+        (new PaymentKeyService($keyApi, new AuthService($keyApi, $config, $this->repoWithCachedToken($config), new FixedTestClock(1000))))
+            ->generate($keyCommand);
+        self::assertSame(['auth_token' => 'cached', ...$keyIntent], $keyApi->postCalls[0]['body']);
+        self::assertSame($keyIntent, $keyCommand->toArray());
+
+        $kioskCommand = new InitiateKioskPaymentCommand('payment-key');
+        $kioskIntent = $kioskCommand->toArray();
+        self::assertSame([
+            'source' => ['identifier' => 'AGGREGATOR', 'subtype' => 'AGGREGATOR'],
+            'payment_token' => 'payment-key',
+        ], $kioskIntent);
+        self::assertArrayNotHasKey('auth_token', $kioskIntent);
+        $kioskApi = new QueueApiClient();
+        $kioskApi->postQueue = [[
+            'id' => 10, 'amount_cents' => 100, 'currency' => 'EGP', 'pending' => false, 'success' => true,
+            'order' => ['id' => 5, 'merchant_order_id' => 'order-ref'],
+        ]];
+        (new KioskPaymentService($kioskApi, new AuthService($kioskApi, $config, $this->repoWithCachedToken($config), new FixedTestClock(1000))))
+            ->pay($kioskCommand);
+        self::assertSame(['auth_token' => 'cached', ...$kioskIntent], $kioskApi->postCalls[0]['body']);
+        self::assertSame($kioskIntent, $kioskCommand->toArray());
+    }
+
     public function testProviderDiagnosticSnapshotsRemainAccessibleButAreExcludedFromJson(): void
     {
         $sentinel = ['__raw_provider_sentinel__' => 'must-not-be-json-serialized'];
@@ -355,11 +410,16 @@ final class RuntimeSecuritySystemTest extends TestCase
             ['id' => 5, 'created_at' => 'now', 'currency' => 'EGP', 'amount_cents' => 100]];
         $auth = new AuthService($api, $config, $repo, new FixedTestClock(1000));
         $service = new OrderService($api, $auth);
-        $order = $service->createOrder(new CreateOrderCommand(100, CurrencyEnum::EGP));
+        $command = new CreateOrderCommand(100, CurrencyEnum::EGP);
+        $order = $service->createOrder($command);
         self::assertSame(5, $order->id);
         self::assertCount(3, $api->postCalls);
         self::assertSame('old', $api->postCalls[0]['body']['auth_token']);
         self::assertSame('new', $api->postCalls[2]['body']['auth_token']);
+        self::assertSame(
+            array_diff_key($api->postCalls[0]['body'], ['auth_token' => true]),
+            array_diff_key($api->postCalls[2]['body'], ['auth_token' => true]),
+        );
     }
 
     public function testPaymentKeyKioskAndTransactionUseOneSameScope401Replay(): void
@@ -375,6 +435,10 @@ final class RuntimeSecuritySystemTest extends TestCase
         self::assertSame('payment-key', $key->token);
         self::assertCount(3, $keyApi->postCalls);
         self::assertSame('new-key-token', $keyApi->postCalls[2]['body']['auth_token']);
+        self::assertSame(
+            array_diff_key($keyApi->postCalls[0]['body'], ['auth_token' => true]),
+            array_diff_key($keyApi->postCalls[2]['body'], ['auth_token' => true]),
+        );
 
         $kioskRepo = $this->repoWithCachedToken($config);
         $kioskApi = new QueueApiClient();
@@ -384,6 +448,10 @@ final class RuntimeSecuritySystemTest extends TestCase
         $kioskService = new KioskPaymentService($kioskApi, new AuthService($kioskApi, $config, $kioskRepo, new FixedTestClock(1000)));
         self::assertSame(20, $kioskService->pay(new InitiateKioskPaymentCommand('payment-key'))->transactionId);
         self::assertCount(3, $kioskApi->postCalls);
+        self::assertSame(
+            array_diff_key($kioskApi->postCalls[0]['body'], ['auth_token' => true]),
+            array_diff_key($kioskApi->postCalls[2]['body'], ['auth_token' => true]),
+        );
 
         $transactionRepo = $this->repoWithCachedToken($config);
         $transactionApi = new QueueApiClient();

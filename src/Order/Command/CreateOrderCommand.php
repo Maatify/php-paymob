@@ -22,9 +22,13 @@ final readonly class CreateOrderCommand
         foreach ($items as $item) if (!$item instanceof OrderItem) throw new InvalidArgumentException('items must contain OrderItem values.');
     }
 
-    public function toArray(string $authToken): array
+    public function toArray(): array
     {
-        return ['auth_token' => $authToken, 'amount_cents' => $this->amountCents, 'currency' => $this->currency->value,
-            'merchant_order_id' => $this->merchantOrderId, 'items' => array_map(static fn (OrderItem $item) => $item->toArray(), $this->items)];
+        return [
+            'amount_cents' => $this->amountCents,
+            'currency' => $this->currency->value,
+            'merchant_order_id' => $this->merchantOrderId,
+            'items' => array_map(static fn (OrderItem $item) => $item->toArray(), $this->items),
+        ];
     }
 }

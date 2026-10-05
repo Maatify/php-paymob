@@ -16,10 +16,15 @@ final readonly class GeneratePaymentKeyCommand
         if (min($orderId, $integrationId, $amountCents, $expirationSeconds) <= 0) throw new InvalidArgumentException('Order, integration, amount, and expiration values must be positive.');
     }
 
-    public function toArray(string $authToken): array
+    public function toArray(): array
     {
-        return ['auth_token' => $authToken, 'order_id' => $this->orderId, 'integration_id' => $this->integrationId,
-            'amount_cents' => $this->amountCents, 'currency' => $this->currency->value,
-            'expiration' => $this->expirationSeconds, 'billing_data' => $this->billingData->toArray()];
+        return [
+            'order_id' => $this->orderId,
+            'integration_id' => $this->integrationId,
+            'amount_cents' => $this->amountCents,
+            'currency' => $this->currency->value,
+            'expiration' => $this->expirationSeconds,
+            'billing_data' => $this->billingData->toArray(),
+        ];
     }
 }

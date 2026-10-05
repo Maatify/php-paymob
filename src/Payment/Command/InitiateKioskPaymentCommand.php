@@ -13,8 +13,11 @@ final readonly class InitiateKioskPaymentCommand
         if (trim($paymentToken) === '') throw new InvalidArgumentException('paymentToken must not be empty.');
     }
 
-    public function toArray(string $authToken): array
+    public function toArray(): array
     {
-        return ['source' => ['identifier' => 'AGGREGATOR', 'subtype' => 'AGGREGATOR'], 'payment_token' => $this->paymentToken, 'auth_token' => $authToken];
+        return [
+            'source' => ['identifier' => 'AGGREGATOR', 'subtype' => 'AGGREGATOR'],
+            'payment_token' => $this->paymentToken,
+        ];
     }
 }

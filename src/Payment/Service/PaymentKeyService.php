@@ -18,11 +18,13 @@ final readonly class PaymentKeyService
     {
         $uri = '/acceptance/payment_keys';
         $token = $this->authService->getToken()->token;
-        try { $response = $this->http->post($uri, $command->toArray($token)); }
+        $payload = ['auth_token' => $token, ...$command->toArray()];
+        try { $response = $this->http->post($uri, $payload); }
         catch (ApiException $e) {
             if ($e->getProviderStatusCode() !== 401) throw $e;
             $fresh = $this->authService->getToken(forceRefresh: true)->token;
-            $response = $this->http->post($uri, $command->toArray($fresh));
+            $payload = ['auth_token' => $fresh, ...$command->toArray()];
+            $response = $this->http->post($uri, $payload);
         }
         if (!isset($response['token']) || !is_string($response['token']) || $response['token'] === '') throw new ApiException('Paymob Payment Key response is missing its required token.', null, $response);
         return new PaymentKeyResponseDTO($response['token'], $command->orderId);

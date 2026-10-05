@@ -18,11 +18,13 @@ final readonly class KioskPaymentService
     {
         $uri = '/acceptance/payments/pay';
         $token = $this->authService->getToken()->token;
-        try { $response = $this->http->post($uri, $command->toArray($token)); }
+        $payload = ['auth_token' => $token, ...$command->toArray()];
+        try { $response = $this->http->post($uri, $payload); }
         catch (ApiException $e) {
             if ($e->getProviderStatusCode() !== 401) throw $e;
             $fresh = $this->authService->getToken(forceRefresh: true)->token;
-            $response = $this->http->post($uri, $command->toArray($fresh));
+            $payload = ['auth_token' => $fresh, ...$command->toArray()];
+            $response = $this->http->post($uri, $payload);
         }
         return KioskPaymentResponseDTO::fromArray($response);
     }

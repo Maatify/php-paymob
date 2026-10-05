@@ -21,11 +21,13 @@ final readonly class OrderService
     {
         $uri = '/ecommerce/orders';
         $token = $this->authService->getToken()->token;
-        try { $response = $this->http->post($uri, $command->toArray($token)); }
+        $payload = ['auth_token' => $token, ...$command->toArray()];
+        try { $response = $this->http->post($uri, $payload); }
         catch (ApiException $e) {
             if ($e->getProviderStatusCode() !== 401) throw $e;
             $fresh = $this->authService->getToken(forceRefresh: true)->token;
-            $response = $this->http->post($uri, $command->toArray($fresh));
+            $payload = ['auth_token' => $fresh, ...$command->toArray()];
+            $response = $this->http->post($uri, $payload);
         }
         foreach (['id' => 'int', 'created_at' => 'string', 'currency' => 'string', 'amount_cents' => 'int'] as $field => $type) {
             if (!isset($response[$field]) || get_debug_type($response[$field]) !== $type) throw new ApiException("Paymob order response has an invalid required field: {$field}.", null, $response);
