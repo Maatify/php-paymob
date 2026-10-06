@@ -45,7 +45,7 @@ final class RetainedRunRecovery
     ): array
     {
         $recovery = new self();
-        $recovery->scenario = in_array($scenario, ['wallet', 'kiosk', 'payment-key', 'transaction-inquiry'], true)
+        $recovery->scenario = in_array($scenario, ['wallet', 'kiosk', 'payment-key', 'transaction-inquiry', 'intention'], true)
             ? $scenario : 'unsupported';
         try {
             return $recovery->recoverValidated($repositoryRoot, $sourceDirectory, $scenario, $paymentMethod);
@@ -62,7 +62,7 @@ final class RetainedRunRecovery
     ): array
     {
         $this->stage = 'path-validation';
-        if (!(in_array($scenario, ['wallet', 'kiosk', 'transaction-inquiry'], true) && $paymentMethod === null)
+        if (!(in_array($scenario, ['wallet', 'kiosk', 'transaction-inquiry', 'intention'], true) && $paymentMethod === null)
             && !($scenario === 'payment-key' && $paymentMethod === 'card')) {
             throw new RuntimeException('The retained-run recovery scenario and method are not supported.');
         }
@@ -92,7 +92,9 @@ final class RetainedRunRecovery
         $this->sourceDirectory = $runRealPath;
 
         $this->stage = 'configuration';
-        $config = VerificationConfig::load($repositoryRealPath, $scenario, $paymentMethod);
+        $config = $scenario === 'intention'
+            ? VerificationConfig::loadIntentionRecovery($repositoryRealPath)
+            : VerificationConfig::load($repositoryRealPath, $scenario, $paymentMethod);
         if ($scenario === 'wallet'
             && ($config->walletIntegrationId === null || $config->walletTestMsisdn === null)) {
             throw new RuntimeException('Wallet recovery configuration is incomplete.');
@@ -106,7 +108,7 @@ final class RetainedRunRecovery
         if ($scenario === 'transaction-inquiry' && $config->testTransactionId === null) {
             throw new RuntimeException('Transaction Inquiry recovery configuration is incomplete.');
         }
-        $attemptStageClassifier = ProviderAttemptStageClassifier::fromConfig($config);
+        $attemptStageClassifier = $scenario === 'intention' ? null : ProviderAttemptStageClassifier::fromConfig($config);
         $this->sanitizer = new SemanticSanitizer(
             $config->configuredSecrets(),
             $scenario === 'wallet' ? $config->walletTestMsisdn : null,
@@ -125,14 +127,22 @@ final class RetainedRunRecovery
             $emptyTransactionGet = $scenario === 'transaction-inquiry' && $requestBytes === '';
             $request = $emptyTransactionGet
                 ? null
-                : json_decode($requestBytes, false, 512, JSON_THROW_ON_ERROR);
-            $response = json_decode($responseBytes, false, 512, JSON_THROW_ON_ERROR);
+                : json_decode($requestBytes, $scenario === 'intention', 512, JSON_THROW_ON_ERROR);
+            $response = json_decode($responseBytes, $scenario === 'intention', 512, JSON_THROW_ON_ERROR);
             if (!is_string($urlBytes) || trim($urlBytes) === '') {
                 throw new RuntimeException('A retained request URL is empty or invalid.');
             }
 
             try {
-                $stage = $attemptStageClassifier->classify($urlBytes, $request);
+                if ($scenario === 'intention') {
+                    if ($urlBytes !== 'https://accept.paymob.com/v1/intention/'
+                        || !ProviderAttemptStageClassifier::validateRetainedIntentionRequest($request, (int)$config->cardIntegrationId)) {
+                        throw new RuntimeException('Retained Intention request failed its exact endpoint or body contract.');
+                    }
+                    $stage = 'create-intention';
+                } else {
+                    $stage = $attemptStageClassifier->classify($urlBytes, $request);
+                }
             } catch (RuntimeException $exception) {
                 $path = parse_url($urlBytes, PHP_URL_PATH);
                 $repeatedOperation = is_string($path) && $path === '/api/auth/tokens'
@@ -158,7 +168,9 @@ final class RetainedRunRecovery
                 }
                 throw $exception;
             }
-            $attemptStageClassifier->recordRetainedOutcome($stage);
+            if ($scenario !== 'intention') {
+                $attemptStageClassifier->recordRetainedOutcome($stage);
+            }
             if ($scenario === 'transaction-inquiry' && str_starts_with($stage, 'transaction-inquiry')
                 && !$emptyTransactionGet) {
                 throw new RuntimeException('A retained Transaction Inquiry GET must have an empty request body.');
@@ -179,6 +191,35 @@ final class RetainedRunRecovery
             $prime[] = $urlBytes;
             $prime[] = $request;
             $prime[] = $response;
+        }
+
+        $intentionReferenceMatches = null;
+        if ($scenario === 'intention') {
+            if (count($decoded) !== 1) {
+                throw new RuntimeException('Retained Intention evidence must contain exactly one request triplet.');
+            }
+            $requestReference = $decoded[0]['request_raw']['special_reference'];
+            $response = $decoded[0]['response_raw'];
+            if (is_array($response) && array_key_exists('special_reference', $response)) {
+                $responseReference = $response['special_reference'];
+                if (!is_string($responseReference) || $responseReference === ''
+                    || !hash_equals($requestReference, $responseReference)) {
+                    throw new RuntimeException('Retained Intention request and response references do not correlate.');
+                }
+                $intentionReferenceMatches = true;
+            }
+            $successContractFields = [
+                'id', 'intention_order_id', 'client_secret', 'payment_methods',
+                'special_reference', 'confirmed', 'status',
+            ];
+            $successContractShaped = is_array($response)
+                && array_diff($successContractFields, array_keys($response)) === [];
+            if ($successContractShaped
+                && (!is_string($requestReference) || !ProviderAttemptStageClassifier::validateIntentionResponse(
+                    $response, (int)$config->cardIntegrationId, $requestReference,
+                ))) {
+                throw new RuntimeException('Retained Intention success-shaped response failed its semantic contract.');
+            }
         }
 
         if ($scenario === 'transaction-inquiry') {
@@ -239,6 +280,9 @@ final class RetainedRunRecovery
                 'curl_errno' => null,
                 'curl_error' => null,
                 'response_header_names' => null,
+                'request_authorization_value_verification' => $scenario === 'intention' ? 'unavailable_from_retained_raw' : null,
+                'intention_reference_matches' => $scenario === 'intention' ? $intentionReferenceMatches : null,
+                'provider_outcome' => $scenario === 'intention' ? 'unavailable_without_http_status' : null,
                 'response_body_bytes' => strlen($entry['response_bytes']),
                 'response_body_sha256' => hash('sha256', $entry['response_bytes']),
                 'response_json_valid' => true,
@@ -284,6 +328,7 @@ final class RetainedRunRecovery
                 'scenario' => $scenario,
                 'exchange_count' => count($exchanges),
                 'source_raw_retained' => true,
+                'provider_outcome' => $scenario === 'intention' ? 'unavailable_without_http_status' : null,
             ],
             'exchanges' => $exchanges,
             'id_mappings' => $sanitizer->idMappingSummary(),

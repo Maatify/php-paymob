@@ -12,9 +12,11 @@ use RuntimeException;
 use stdClass;
 use Throwable;
 
-/** Sends package-service requests over verified TLS and captures each exchange privately. */
+/** Sends classified provider verification requests over verified TLS and captures exchanges privately. */
 final class CapturingApiClient implements ApiClientInterface
 {
+    private ?int $lastHttpStatus = null;
+
     public function __construct(
         private readonly string $baseUrl,
         private readonly CaptureSession $captureSession,
@@ -34,6 +36,12 @@ final class CapturingApiClient implements ApiClientInterface
     public function classifyAttemptStage(string $url, mixed $requestShape): string
     {
         return $this->attemptStageClassifier->classify($url, $requestShape);
+    }
+
+    /** Last captured HTTP status for the immediately preceding request. */
+    public function lastHttpStatus(): ?int
+    {
+        return $this->lastHttpStatus;
     }
 
     /** Record a deterministic synthetic outcome through the same live classification seam. */
@@ -109,7 +117,7 @@ final class CapturingApiClient implements ApiClientInterface
     {
         // Redirects are disabled, so this validated target is the actual provider URL.
         // Classify before creating or executing a transport handle; unknown requests never leave the process.
-        $stage = $this->classifyAttemptStage($url, $requestShape);
+        $stage = $this->attemptStageClassifier->classify($url, $requestShape, $method, $headers);
         $curl = curl_init($url);
         if ($curl === false) {
             $this->attemptStageClassifier->recordOutcome($stage, false, null);
@@ -140,6 +148,7 @@ final class CapturingApiClient implements ApiClientInterface
         $curlErrno = curl_errno($curl);
         $curlError = curl_error($curl);
         $httpStatus = (int)curl_getinfo($curl, CURLINFO_RESPONSE_CODE);
+        $this->lastHttpStatus = $httpStatus;
         $requestHeaderBlock = (string)curl_getinfo($curl, CURLINFO_HEADER_OUT);
         $finalUrl = (string)curl_getinfo($curl, CURLINFO_EFFECTIVE_URL);
         $transportOk = $executionResult !== false;

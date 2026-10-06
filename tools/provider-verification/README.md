@@ -8,7 +8,7 @@ This tooling is separate from the Unit Test suite: it makes real HTTP requests t
 
 Execution is manual and explicit. Each flow can create provider-side orders or transactions. Confirm the exact provider contract and approved scenario with the Lead before running a script; the scripts are for confirmation, not trial-and-error API discovery. They are not run automatically by CI.
 
-Requirements:
+Requirements for the existing scenarios:
 
 - PHP 8.4 or later, Composer dependencies installed, and the cURL extension.
 - A repository-local `.env` with `PAYMOB_API_KEY`, `PAYMOB_HMAC_SECRET`, all three integration IDs, and `PAYMOB_BASE_URL`.
@@ -31,6 +31,33 @@ php tools/provider-verification/wallet.php
 php tools/provider-verification/transaction-inquiry.php
 ```
 
+## Create Intention contract probe
+
+The verification-only `intention` scenario reads only `PAYMOB_SECRET_KEY`,
+`PAYMOB_INTEGRATION_ID_CARD`, `PAYMOB_TEST_NOTIFICATION_URL`, and
+`PAYMOB_TEST_REDIRECTION_URL`. It targets `POST
+https://accept.paymob.com/v1/intention/` directly with Token authorization. It
+does not execute Auth, Order, Payment Key, or another scenario. Configure these
+four Intention verification inputs in the repository-local `.env`; placeholders
+in `.env.example` are not usable provider credentials or callback architecture
+decisions.
+
+The command creates one synthetic 15000 EGP cents Card Intention and can create
+provider-side state. Run it only after direct Lead review and separate explicit
+authorization for the exact provider call:
+
+```sh
+php tools/provider-verification/intention.php
+```
+
+`PAYMOB_SECRET_KEY`, Authorization values, client secrets, synthetic billing
+data, and private callback URL data are excluded from sanitized artifacts and
+diagnostics. A successful response must be HTTP 201 and satisfy the prepared
+response contract. The reported `special_reference_matches` boolean proves
+correlation without exposing the reference. This tooling is a transitional
+verification-only contract probe; it is not package runtime behavior or a
+public request builder.
+
 `payment-key.php` requires exactly one explicit method. The other payment flows select their current integration ID from configuration. `wallet.php` initiates the current wallet flow only; it does not submit an OTP or follow a redirect.
 `transaction-inquiry.php` authenticates and reads only the configured Transaction ID with `GET /api/acceptance/transactions/{id}` and Bearer authorization. It creates no order or payment. Run it only after separate Lead authorization for a real provider call.
 
@@ -47,12 +74,16 @@ php tools/provider-verification/recover.php <absolute-run-directory> wallet
 php tools/provider-verification/recover.php <absolute-run-directory> kiosk
 php tools/provider-verification/recover.php <absolute-run-directory> payment-key card
 php tools/provider-verification/recover.php <absolute-run-directory> transaction-inquiry
+php tools/provider-verification/recover.php <absolute-run-directory> intention
 ```
 
-Offline recovery supports `wallet`, `kiosk`, Transaction Inquiry, and standalone Card Payment Key recovery with an
+Offline recovery supports `wallet`, `kiosk`, Intention, Transaction Inquiry, standalone Card Payment Key recovery with an
 explicit `card` method. It makes no provider request. It reads a source run in place, writes a sanitized recovery
 artifact, and does not delete or modify the retained raw run. Runtime-only metadata absent from raw files is reported
-as unavailable rather than inferred.
+as unavailable rather than inferred. Intention recovery accepts exactly one retained request to
+`https://accept.paymob.com/v1/intention/`, validates the synthetic request contract, and checks matching
+`special_reference` values when both are present. Since the raw triplet omits HTTP status and retained headers, it
+reports provider outcome and authorization-value verification as unavailable; it does not infer a 201 response.
 
 Reports preserve response field names, JSON shape, scalar types, nulls, and provider-semantic values. Known secrets, private PII, and account-specific identifiers are replaced with type-compatible placeholders; repeated IDs and references use stable mappings within a capture session. A leak guard fails closed if configured or detected sensitive values remain. Do not copy raw evidence into the repository, a fixture, a log, or a review comment.
 
