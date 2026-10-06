@@ -37,9 +37,10 @@ The verification-only `intention` scenario reads only `PAYMOB_SECRET_KEY`,
 `PAYMOB_INTEGRATION_ID_CARD`, `PAYMOB_TEST_NOTIFICATION_URL`, and
 `PAYMOB_TEST_REDIRECTION_URL`. It targets `POST
 https://accept.paymob.com/v1/intention/` directly with Token authorization. It
-does not execute Auth, Order, Payment Key, or another scenario. Configure the
-three local values in `.env`; placeholders in `.env.example` are not usable
-provider credentials or callback architecture decisions.
+does not execute Auth, Order, Payment Key, or another scenario. Configure these
+four Intention verification inputs in the repository-local `.env`; placeholders
+in `.env.example` are not usable provider credentials or callback architecture
+decisions.
 
 The command creates one synthetic 15000 EGP cents Card Intention and can create
 provider-side state. Run it only after direct Lead review and separate explicit

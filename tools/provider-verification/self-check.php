@@ -1378,7 +1378,7 @@ JSON;
         is_string($recoverySource) && is_string($recoveryEntryPoint) && is_string($attemptClassifierSource),
         'Recovery or shared classifier source could not be inspected.',
     );
-    foreach (['curl_' . 'init', 'curl_' . 'exec', 'ApiClient' . 'Interface', 'Auth' . 'Service', 'Order' . 'Service'] as $forbiddenCall) {
+    foreach (['curl_' . 'init', 'curl_' . 'exec', 'ApiClient' . 'Interface', 'CapturingApiClient', 'Auth' . 'Service', 'Order' . 'Service'] as $forbiddenCall) {
         verify(
             !str_contains($recoverySource, $forbiddenCall) && !str_contains($recoveryEntryPoint, $forbiddenCall),
             'Offline recovery source contains a provider-network dependency.',
@@ -1453,30 +1453,48 @@ JSON;
         'special_reference' => 'verification-0123456789abcdef01234567', 'expiration' => 3600,
         'notification_url' => 'https://verify.example.test/notify', 'redirection_url' => 'https://verify.example.test/return',
     ];
-    $retainedIntentionResponse = ['detail' => 'synthetic provider error', 'special_reference' => $retainedIntentionRequest['special_reference']];
-    $writeIntentionTriplet = static function (string $directory, string $url) use ($retainedIntentionRequest, $retainedIntentionResponse): void {
+    $retainedIntentionResponse = ['payment_methods' => ['This payment method is invalid'], 'detail' => 'Synthetic provider validation error'];
+    $writeIntentionTriplet = static function (string $directory, string $url, ?array $request = null, ?array $response = null) use ($retainedIntentionRequest, $retainedIntentionResponse): void {
+        $request ??= $retainedIntentionRequest;
+        $response ??= $retainedIntentionResponse;
         foreach ([
             '0001-request-url.txt' => $url,
-            '0001-request-body.bin' => json_encode($retainedIntentionRequest, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR),
-            '0001-response-body.bin' => json_encode($retainedIntentionResponse, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR),
+            '0001-request-body.bin' => json_encode($request, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR),
+            '0001-response-body.bin' => json_encode($response, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR),
         ] as $name => $bytes) {
             $path = $directory . DIRECTORY_SEPARATOR . $name;
             verify(file_put_contents($path, $bytes) === strlen($bytes), 'Synthetic Intention raw triplet could not be written.');
             chmod($path, 0600);
         }
     };
+    $snapshotIntentionRun = static function (string $directory): array {
+        $files = [];
+        foreach (scandir($directory) ?: [] as $fileName) {
+            if ($fileName === '.' || $fileName === '..') { continue; }
+            $path = $directory . DIRECTORY_SEPARATOR . $fileName;
+            $contents = file_get_contents($path); $bytes = filesize($path); $sha256 = hash_file('sha256', $path); $mode = fileperms($path);
+            verify(is_string($contents) && is_int($bytes) && is_string($sha256) && is_int($mode), 'Intention raw evidence snapshot failed.');
+            $files[$fileName] = ['contents' => $contents, 'bytes' => $bytes, 'sha256' => $sha256, 'permissions' => $mode & 0777];
+        }
+        ksort($files, SORT_STRING);
+        return ['directory_permissions' => fileperms($directory) & 0777, 'files' => $files];
+    };
     $writeIntentionTriplet($intentionRecoveryDirectory, 'https://accept.paymob.com/v1/intention/');
-    $intentionRawSnapshot = array_map('file_get_contents', glob($intentionRecoveryDirectory . DIRECTORY_SEPARATOR . '*') ?: []);
+    $intentionRawSnapshot = $snapshotIntentionRun($intentionRecoveryDirectory);
     $intentionRecovery = RetainedRunRecovery::recover($syntheticRecoveryConfigDirectory, $intentionRecoveryDirectory, 'intention');
     if (is_string($intentionRecovery['failure_artifact']['path'] ?? null)) {
         $unexpectedRecoveryFailureArtifactPaths[] = $intentionRecovery['failure_artifact']['path'];
     }
     verify($intentionRecovery['result'] === 'PASS'
+        && $intentionRecovery['report']['exchanges'][0]['sanitized_response_fixture_candidate']['detail'] === 'Synthetic provider validation error'
+        && $intentionRecovery['report']['exchanges'][0]['intention_reference_matches'] === null
+        && $intentionRecovery['report']['exchanges'][0]['request_authorization_value_verification'] === 'unavailable_from_retained_raw'
+        && $intentionRecovery['report']['exchanges'][0]['request_header_names'] === null
         && $intentionRecovery['report']['source']['provider_outcome'] === 'unavailable_without_http_status'
         && $intentionRecovery['report']['exchanges'][0]['http_status'] === null
         && $intentionRecovery['report']['exchanges'][0]['transport_ok'] === null
-        && $intentionRecovery['report']['exchanges'][0]['intention_reference_matches'] === true
-        && $intentionRawSnapshot === array_map('file_get_contents', glob($intentionRecoveryDirectory . DIRECTORY_SEPARATOR . '*') ?: []),
+        && $intentionRecovery['report']['exchanges'][0]['provider_outcome'] === 'unavailable_without_http_status'
+        && $intentionRawSnapshot === $snapshotIntentionRun($intentionRecoveryDirectory),
         'Offline Intention recovery inferred status, lost correlation, or changed source evidence.');
     $intentionRecoveryArtifactPaths[] = $intentionRecovery['artifact']['path'];
     foreach ([
@@ -1709,6 +1727,110 @@ JSON;
 
         return $snapshot;
     };
+    $intentionSuccessDirectory = $privateNamespace . DIRECTORY_SEPARATOR . 'run-intention-success-self-check-' . bin2hex(random_bytes(6));
+    $intentionErrorArtifact = $validateRecoveryArtifact(
+        $intentionRecovery, 'intention', basename($intentionRecoveryDirectory),
+    );
+    $intentionErrorPersisted = json_decode($intentionErrorArtifact['contents'], true, 512, JSON_THROW_ON_ERROR);
+    $intentionLeakGuard = new SemanticSanitizer();
+    verify(
+        !$intentionLeakGuard->containsSensitiveValues($intentionErrorPersisted)
+        && !array_key_exists('success', $intentionErrorPersisted['exchanges'][0]['sanitized_response_fixture_candidate'])
+        && $intentionErrorPersisted['source']['provider_outcome'] === 'unavailable_without_http_status'
+        && $intentionErrorPersisted['exchanges'][0]['http_status'] === null
+        && $intentionErrorPersisted['exchanges'][0]['transport_ok'] === null,
+        'Persisted payment_methods-only error recovery claimed success, inferred metadata, or retained sensitive data.',
+    );
+
+    verify(mkdir($intentionSuccessDirectory, 0700), 'Synthetic successful Intention retained run could not be created.');
+    chmod($intentionSuccessDirectory, 0700);
+    $syntheticIntentionRecoveryDirectories[] = $intentionSuccessDirectory;
+    $intentionSuccessSecret = 'short-synthetic-client-secret';
+    $intentionSuccessPaymentKey = 'short-synthetic-payment-key-abc';
+    $intentionSuccessResponse = [
+        'id' => 'pi_synthetic', 'intention_order_id' => 900001,
+        'client_secret' => $intentionSuccessSecret,
+        'payment_methods' => [['integration_id' => 980001]],
+        'payment_keys' => [['key' => $intentionSuccessPaymentKey, 'type' => 'card']],
+        'special_reference' => $retainedIntentionRequest['special_reference'],
+        'confirmed' => false, 'status' => 'intended',
+    ];
+    $writeIntentionTriplet($intentionSuccessDirectory, 'https://accept.paymob.com/v1/intention/', $retainedIntentionRequest, $intentionSuccessResponse);
+    $intentionSuccessSourceSnapshot = $snapshotSourceRun($intentionSuccessDirectory);
+    $intentionSuccessRecovery = RetainedRunRecovery::recover($syntheticRecoveryConfigDirectory, $intentionSuccessDirectory, 'intention');
+    if (is_string($intentionSuccessRecovery['failure_artifact']['path'] ?? null)) {
+        $unexpectedRecoveryFailureArtifactPaths[] = $intentionSuccessRecovery['failure_artifact']['path'];
+    }
+    verify($intentionSuccessRecovery['result'] === 'PASS', 'Success-shaped retained Intention recovery failed.');
+    $intentionSuccessArtifact = $validateRecoveryArtifact(
+        $intentionSuccessRecovery, 'intention', basename($intentionSuccessDirectory),
+    );
+    $intentionSuccessPersisted = json_decode($intentionSuccessArtifact['contents'], true, 512, JSON_THROW_ON_ERROR);
+    $intentionSuccessExchange = $intentionSuccessPersisted['exchanges'][0];
+    $intentionSuccessSanitizedRequest = $intentionSuccessExchange['sanitized_request'];
+    $intentionSuccessSanitizedResponse = $intentionSuccessExchange['sanitized_response_fixture_candidate'];
+    verify(
+        $intentionSuccessExchange['request_authorization_value_verification'] === 'unavailable_from_retained_raw'
+        && $intentionSuccessExchange['provider_outcome'] === 'unavailable_without_http_status'
+        && $intentionSuccessExchange['http_status'] === null && $intentionSuccessExchange['transport_ok'] === null
+        && $intentionSuccessPersisted['source']['provider_outcome'] === 'unavailable_without_http_status'
+        && $intentionSuccessExchange['request_header_names'] === null
+        && $intentionSuccessExchange['intention_reference_matches'] === true,
+        'Successful recovery inferred unavailable status, transport, headers, authorization, or provider outcome metadata.',
+    );
+    verify(
+        $intentionSuccessSanitizedResponse['client_secret'] === '<REDACTED_SECRET>'
+        && $intentionSuccessSanitizedResponse['client_secret'] !== $intentionSuccessSecret
+        && $intentionSuccessSanitizedResponse['payment_keys'][0]['key'] === '<REDACTED_SECRET>'
+        && $intentionSuccessSanitizedResponse['payment_keys'][0]['key'] !== $intentionSuccessPaymentKey,
+        'Persisted successful Intention recovery did not redact client/payment secrets.',
+    );
+    verify($intentionSuccessSanitizedResponse['special_reference'] === $intentionSuccessSanitizedRequest['special_reference'], 'Persisted Intention special_reference relationship was not preserved.');
+    verify(count($intentionSuccessSanitizedResponse['payment_methods']) === 1
+        && $intentionSuccessSanitizedResponse['payment_methods'][0]['integration_id'] === $intentionSuccessSanitizedRequest['payment_methods'][0],
+        'Persisted successful Intention recovery did not preserve integration relationship.');
+    verify($intentionSuccessSanitizedResponse['payment_keys'][0]['type'] === 'card'
+        && count($intentionSuccessSanitizedResponse['payment_keys']) === 1,
+        'Persisted successful Intention recovery changed payment_keys sibling semantics or list cardinality.');
+    verify($intentionSuccessSanitizedResponse['confirmed'] === false
+        && $intentionSuccessSanitizedResponse['status'] === 'intended'
+        && $intentionSuccessExchange['response_top_level_type'] === 'array'
+        && $intentionSuccessExchange['response_top_level_keys'] === array_keys($intentionSuccessResponse)
+        && is_string($intentionSuccessSanitizedResponse['id'])
+        && is_int($intentionSuccessSanitizedResponse['intention_order_id']),
+        'Persisted successful Intention recovery changed response shape or core semantics.');
+    verify(!str_contains($intentionSuccessArtifact['contents'], $intentionSuccessSecret)
+        && !str_contains($intentionSuccessArtifact['contents'], $intentionSuccessPaymentKey),
+        'Persisted successful Intention recovery contains a raw client/payment secret.');
+    verify(!$intentionLeakGuard->containsSensitiveValues($intentionSuccessPersisted), 'Persisted Intention artifact failed the shared leak guard.');
+    verify(
+        $intentionSuccessSourceSnapshot === $snapshotSourceRun($intentionSuccessDirectory),
+        'Successful Intention recovery changed source filenames, bytes, hashes, permissions, or directory permissions.',
+    );
+
+    $mismatchedResponse = $retainedIntentionResponse + [
+        'special_reference' => 'verification-fedcba987654321001234567',
+    ];
+    $writeIntentionTriplet($intentionSuccessDirectory, 'https://accept.paymob.com/v1/intention/', $retainedIntentionRequest, $mismatchedResponse);
+    $mismatchSnapshot = $snapshotSourceRun($intentionSuccessDirectory);
+    $mismatchRecovery = RetainedRunRecovery::recover($syntheticRecoveryConfigDirectory, $intentionSuccessDirectory, 'intention');
+    if (is_string($mismatchRecovery['failure_artifact']['path'] ?? null)) { $unexpectedRecoveryFailureArtifactPaths[] = $mismatchRecovery['failure_artifact']['path']; }
+    verify(
+        $mismatchRecovery['result'] === 'FAIL' && $mismatchSnapshot === $snapshotSourceRun($intentionSuccessDirectory),
+        'Offline recovery accepted a mismatched request/response special_reference.',
+    );
+    $malformedRetainedRequest = $retainedIntentionRequest;
+    unset($malformedRetainedRequest['items']);
+    $writeIntentionTriplet($intentionSuccessDirectory, 'https://accept.paymob.com/v1/intention/', $malformedRetainedRequest, $retainedIntentionResponse);
+    $malformedRequestSnapshot = $snapshotSourceRun($intentionSuccessDirectory);
+    $malformedRequestRecovery = RetainedRunRecovery::recover($syntheticRecoveryConfigDirectory, $intentionSuccessDirectory, 'intention');
+    if (is_string($malformedRequestRecovery['failure_artifact']['path'] ?? null)) { $unexpectedRecoveryFailureArtifactPaths[] = $malformedRequestRecovery['failure_artifact']['path']; }
+    verify(
+        $malformedRequestRecovery['result'] === 'FAIL' && $malformedRequestSnapshot === $snapshotSourceRun($intentionSuccessDirectory),
+        'Offline recovery accepted a malformed retained Intention request.',
+    );
+    echo "PASS persisted success-shaped Intention recovery, secret redaction, semantic preservation, correlation, limitations, and source immutability\n";
+
     $sourceSnapshot = $snapshotSourceRun($syntheticRecoveryDirectory);
     verify(is_string($artifactDirectory), 'Sanitized artifact directory is unavailable for the collision regression.');
     $legacyRecoveryArtifactPath = $artifactDirectory . DIRECTORY_SEPARATOR

@@ -205,7 +205,13 @@ final class RetainedRunRecovery
                 throw new RuntimeException('Retained Intention request and response references do not correlate.');
             }
             $response = $decoded[0]['response_raw'];
-            if (is_array($response) && (isset($response['client_secret']) || isset($response['payment_methods']) || isset($response['intention_order_id']))
+            $successContractFields = [
+                'id', 'intention_order_id', 'client_secret', 'payment_methods',
+                'special_reference', 'confirmed', 'status',
+            ];
+            $successContractShaped = is_array($response)
+                && array_diff($successContractFields, array_keys($response)) === [];
+            if ($successContractShaped
                 && (!is_string($requestReference) || !ProviderAttemptStageClassifier::validateIntentionResponse(
                     $response, (int)$config->cardIntegrationId, $requestReference,
                 ))) {

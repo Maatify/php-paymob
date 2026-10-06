@@ -98,7 +98,7 @@ final class SemanticSanitizer
                 return is_float($value) ? 20000000000.0 : 20000000000;
             }
 
-            if ($this->isIdKey($key, $value)) {
+            if ($this->isIdKey($key, $value) || $this->isIntentionIntegrationId($path)) {
                 return $this->mapId($value, $path);
             }
 
@@ -128,7 +128,7 @@ final class SemanticSanitizer
             return '+20000000000';
         }
 
-        if ($this->isIdKey($key, $value)) {
+        if ($this->isIdKey($key, $value) || $this->isIntentionIntegrationId($path)) {
             return $this->mapId($value, $path);
         }
 
@@ -819,6 +819,11 @@ final class SemanticSanitizer
 
         return in_array(strtolower($key), ['owner', 'order'], true)
             && (is_int($value) || is_float($value) || (is_string($value) && ctype_digit($value)));
+    }
+
+    private function isIntentionIntegrationId(string $path): bool
+    {
+        return preg_match('/\.request\.payment_methods\[\d+\]$/', $path) === 1;
     }
 
     private function isPrivateReferenceKey(string $key): bool
