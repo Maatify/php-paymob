@@ -1378,6 +1378,13 @@ JSON;
         is_string($recoverySource) && is_string($recoveryEntryPoint) && is_string($attemptClassifierSource),
         'Recovery or shared classifier source could not be inspected.',
     );
+    $rawCorrelationGuardPosition = strpos($recoverySource, 'array_key_exists(\'special_reference\', $response)');
+    $sanitizationStagePosition = strpos($recoverySource, '$this->stage = \'sanitization\';');
+    verify(
+        is_int($rawCorrelationGuardPosition) && is_int($sanitizationStagePosition)
+        && $rawCorrelationGuardPosition < $sanitizationStagePosition,
+        'Retained Intention correlation is not validated before sanitization and reference mapping.',
+    );
     foreach (['curl_' . 'init', 'curl_' . 'exec', 'ApiClient' . 'Interface', 'CapturingApiClient', 'Auth' . 'Service', 'Order' . 'Service'] as $forbiddenCall) {
         verify(
             !str_contains($recoverySource, $forbiddenCall) && !str_contains($recoveryEntryPoint, $forbiddenCall),
@@ -1497,6 +1504,62 @@ JSON;
         && $intentionRawSnapshot === $snapshotIntentionRun($intentionRecoveryDirectory),
         'Offline Intention recovery inferred status, lost correlation, or changed source evidence.');
     $intentionRecoveryArtifactPaths[] = $intentionRecovery['artifact']['path'];
+    $matchingIntentionResponse = [
+        'special_reference' => $retainedIntentionRequest['special_reference'],
+        'detail' => 'Synthetic provider response',
+    ];
+    $writeIntentionTriplet(
+        $intentionRecoveryDirectory,
+        'https://accept.paymob.com/v1/intention/',
+        $retainedIntentionRequest,
+        $matchingIntentionResponse,
+    );
+    $matchingReferenceSnapshot = $snapshotIntentionRun($intentionRecoveryDirectory);
+    $matchingReferenceRecovery = RetainedRunRecovery::recover(
+        $syntheticRecoveryConfigDirectory,
+        $intentionRecoveryDirectory,
+        'intention',
+    );
+    verify(
+        $matchingReferenceRecovery['result'] === 'PASS'
+        && $matchingReferenceRecovery['report']['exchanges'][0]['intention_reference_matches'] === true
+        && $matchingReferenceRecovery['report']['exchanges'][0]['http_status'] === null
+        && $matchingReferenceRecovery['report']['exchanges'][0]['transport_ok'] === null
+        && $matchingReferenceRecovery['report']['exchanges'][0]['request_header_names'] === null
+        && $matchingReferenceRecovery['report']['exchanges'][0]['request_authorization_value_verification'] === 'unavailable_from_retained_raw'
+        && $matchingReferenceRecovery['report']['exchanges'][0]['provider_outcome'] === 'unavailable_without_http_status'
+        && $matchingReferenceRecovery['report']['source']['provider_outcome'] === 'unavailable_without_http_status'
+        && $matchingReferenceSnapshot === $snapshotIntentionRun($intentionRecoveryDirectory),
+        'Offline Intention recovery failed a matching raw string reference or changed its source evidence.',
+    );
+    $intentionRecoveryArtifactPaths[] = $matchingReferenceRecovery['artifact']['path'];
+    foreach ([
+        'null' => null,
+        'empty string' => '',
+        'non-string integer' => 123,
+    ] as $caseName => $invalidReference) {
+        $invalidReferenceResponse = ['special_reference' => $invalidReference];
+        $writeIntentionTriplet(
+            $intentionRecoveryDirectory,
+            'https://accept.paymob.com/v1/intention/',
+            $retainedIntentionRequest,
+            $invalidReferenceResponse,
+        );
+        $invalidReferenceSnapshot = $snapshotIntentionRun($intentionRecoveryDirectory);
+        $invalidReferenceRecovery = RetainedRunRecovery::recover(
+            $syntheticRecoveryConfigDirectory,
+            $intentionRecoveryDirectory,
+            'intention',
+        );
+        if (is_string($invalidReferenceRecovery['failure_artifact']['path'] ?? null)) {
+            $intentionRecoveryArtifactPaths[] = $invalidReferenceRecovery['failure_artifact']['path'];
+        }
+        verify(
+            $invalidReferenceRecovery['result'] === 'FAIL'
+            && $invalidReferenceSnapshot === $snapshotIntentionRun($intentionRecoveryDirectory),
+            'Offline Intention recovery accepted a present-invalid special_reference (' . $caseName . ') or changed source evidence.',
+        );
+    }
     foreach ([
         '/api/v1/intention/', 'https://example.test/v1/intention/', 'http://accept.paymob.com/v1/intention/',
         'https://accept.paymob.com/v1/intention/?x=1', 'https://accept.paymob.com/v1/intention/#part',

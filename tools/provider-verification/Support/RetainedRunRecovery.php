@@ -193,18 +193,21 @@ final class RetainedRunRecovery
             $prime[] = $response;
         }
 
+        $intentionReferenceMatches = null;
         if ($scenario === 'intention') {
             if (count($decoded) !== 1) {
                 throw new RuntimeException('Retained Intention evidence must contain exactly one request triplet.');
             }
-            $requestReference = $decoded[0]['request_raw']['special_reference'] ?? null;
-            $responseReference = $decoded[0]['response_raw']['special_reference'] ?? null;
-            if (is_string($requestReference) && $requestReference !== ''
-                && is_string($responseReference) && $responseReference !== ''
-                && $requestReference !== $responseReference) {
-                throw new RuntimeException('Retained Intention request and response references do not correlate.');
-            }
+            $requestReference = $decoded[0]['request_raw']['special_reference'];
             $response = $decoded[0]['response_raw'];
+            if (is_array($response) && array_key_exists('special_reference', $response)) {
+                $responseReference = $response['special_reference'];
+                if (!is_string($responseReference) || $responseReference === ''
+                    || !hash_equals($requestReference, $responseReference)) {
+                    throw new RuntimeException('Retained Intention request and response references do not correlate.');
+                }
+                $intentionReferenceMatches = true;
+            }
             $successContractFields = [
                 'id', 'intention_order_id', 'client_secret', 'payment_methods',
                 'special_reference', 'confirmed', 'status',
@@ -278,10 +281,7 @@ final class RetainedRunRecovery
                 'curl_error' => null,
                 'response_header_names' => null,
                 'request_authorization_value_verification' => $scenario === 'intention' ? 'unavailable_from_retained_raw' : null,
-                'intention_reference_matches' => $scenario === 'intention'
-                    ? (($entry['request_raw']['special_reference'] ?? null) === ($entry['response_raw']['special_reference'] ?? null)
-                        && is_string($entry['request_raw']['special_reference'] ?? null) ? true : null)
-                    : null,
+                'intention_reference_matches' => $scenario === 'intention' ? $intentionReferenceMatches : null,
                 'provider_outcome' => $scenario === 'intention' ? 'unavailable_without_http_status' : null,
                 'response_body_bytes' => strlen($entry['response_bytes']),
                 'response_body_sha256' => hash('sha256', $entry['response_bytes']),
